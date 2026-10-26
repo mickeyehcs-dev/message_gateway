@@ -4,7 +4,7 @@ API-first implementation with:
 - Explicit topics only (no wildcard matching)
 - Per-source API tokens and topic allow-lists
 - Individual subscriptions and recipient groups
-- Email through the configured sender API
+- Email through the configured sender API, with a separate API key and sender ID per email destination
 - Multiple Telegram bot/chat destinations
 - Multiple ntfy server/topic destinations
 - Synchronous delivery with per-destination results
@@ -20,6 +20,14 @@ API-first implementation with:
 4. Do not accept arbitrary destinations from incoming source requests. Destinations are managed by the admin API.
 5. D1 is not a durable queue. With synchronous delivery, a Worker termination after a provider accepts a message but before logging can leave ambiguous delivery status. Use a Queue/outbox architecture if you later switch to asynchronous delivery.
 6. The `CORS_ORIGIN` option is optional and should only be set to one trusted origin. API clients such as servers and curl do not need CORS.
+
+## Admin panel
+
+After deployment, open the root domain `https://YOUR-WORKER-URL/` in your browser (the `/admin` path also works). Sign in with `ADMIN_API_KEY`. The key is held in the tab's `sessionStorage` and sent only to this same-origin Worker API; it is cleared when you log out or close the browser tab. Do not open the admin panel on a shared/public computer.
+
+The dashboard supports creating and listing topics, sources, destinations, recipient groups, group memberships, and subscriptions; disabling records; and viewing recent delivery logs. Source tokens are shown only once after creation, so copy them securely. Destination credentials are never displayed after creation.
+
+For additional protection, put the `/admin` path behind Cloudflare Access if your deployment supports it. The API key is still required by the admin API.
 
 ## 1. Prerequisites
 
@@ -117,13 +125,13 @@ Copy the returned `token` immediately. The database stores only its SHA-256 hash
 
 ### Email
 
-The email API key is a Worker secret (`EMAIL_API_KEY`). The sender ID can be configured per destination.
+Each email destination is configured in the admin panel with its own recipient address, sender ID, and sender API key. The API key is encrypted in D1 using `DESTINATION_ENCRYPTION_KEY`; it is not returned by destination listing endpoints. You no longer need a global `EMAIL_API_KEY` secret. The email API URL remains configurable through `EMAIL_API_URL`.
 
 ```bash
 curl -sS -X POST "$BASE_URL/v1/admin/destinations" \
   -H "Authorization: Bearer $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"name":"ops-email","type":"email","to":"ops@example.com","sender_id":"snd_REPLACE_ME"}'
+  -d '{"name":"ops-email","type":"email","to":"ops@example.com","sender_id":"snd_REPLACE_ME","api_key":"REPLACE_WITH_EMAIL_API_KEY"}'
 ```
 
 ### Telegram
@@ -251,7 +259,7 @@ Expected:
 ## 12. Security and operational checklist
 
 - Use a custom domain and Cloudflare-managed HTTPS if desired.
-- Keep `ADMIN_API_KEY`, `EMAIL_API_KEY`, and `DESTINATION_ENCRYPTION_KEY` as Worker secrets.
+- Keep `ADMIN_API_KEY` and `DESTINATION_ENCRYPTION_KEY` as Worker secrets. Email API keys are stored encrypted per email destination in D1.
 - Rotate the email API key if it was pasted into a public or untrusted place.
 - Restrict admin endpoints further with Cloudflare Access or another admin-only control when practical.
 - Add Cloudflare rate limiting/WAF rules to `/v1/notify` and admin paths.
