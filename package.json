@@ -1,0 +1,16 @@
+{
+  "name": "universal-notification-gateway",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create universal-notification-gateway",
+    "db:migrate:local": "wrangler d1 migrations apply universal-notification-gateway --local",
+    "db:migrate:remote": "wrangler d1 migrations apply universal-notification-gateway --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
