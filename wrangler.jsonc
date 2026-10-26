@@ -1,18 +1,18 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "universal-notification-gateway",
+  "name": "message_gateway",
   "main": "src/index.js",
   "compatibility_date": "2026-10-26",
   "workers_dev": true,
   "vars": {
     "EMAIL_API_URL": "https://sender-api.mickey.qzz.io/api/v1/send",
-    "EMAIL_SENDER_ID": "REPLACE_WITH_DEFAULT_SENDER_ID"
+    "EMAIL_SENDER_ID": "snd_mvcmbbyw"
   },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "universal-notification-gateway",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_name": "message_gateway",
+      "database_id": "5b0c65b9-7889-4917-8ce0-263507c1efa4",
       "migrations_dir": "migrations"
     }
   ]
