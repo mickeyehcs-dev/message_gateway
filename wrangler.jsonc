@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "message_gateway",
+  "name": "message-gateway",
   "main": "src/index.js",
   "compatibility_date": "2026-10-26",
   "workers_dev": true,
