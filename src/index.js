@@ -27,7 +27,7 @@ label{display:block;color:var(--muted);font-size:13px}textarea{min-height:75px;r
 <section id="login" class="panel">
 <h2>Admin sign in</h2><p>Enter the ADMIN_API_KEY configured as a Cloudflare Worker secret. The key is held in this tab's session storage only.</p>
 <label for="adminKey">Admin API key</label><input id="adminKey" type="password" autocomplete="current-password" placeholder="Paste admin key">
-<button class="primary" id="loginBtn">Connect</button><div id="loginMsg" class="notice hidden"></div>
+<button type="button" class="primary" id="loginBtn">Connect</button><div id="loginMsg" class="notice hidden"></div>
 </section>
 <section id="app" class="hidden">
 <div id="message" class="notice hidden"></div>
@@ -60,14 +60,29 @@ label{display:block;color:var(--muted);font-size:13px}textarea{min-height:75px;r
 <script>
 (() => {
 const $ = (id) => document.getElementById(id);
-let key = sessionStorage.getItem("ngw_admin_key") || "";
+// Storage can be blocked in some browser/privacy modes. Never let that stop
+// the login script from registering the Connect handler.
+function getSavedKey() { try { return window.sessionStorage.getItem("ngw_admin_key") || ""; } catch (_) { return ""; } }
+function saveKey(value) { try { window.sessionStorage.setItem("ngw_admin_key", value); } catch (_) {} }
+function clearSavedKey() { try { window.sessionStorage.removeItem("ngw_admin_key"); } catch (_) {} }
+let key = getSavedKey();
 let cache = {topics:[],sources:[],destinations:[],groups:[],members:[],subscriptions:[],logs:[]};
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function msg(text, type="ok", target="message") { const el=$(target); el.textContent=text; el.className="notice "+type; }
 function hideMsg(target="message") { $(target).classList.add("hidden"); }
 async function api(path, options={}) {
   const headers = {"Authorization":"Bearer "+key, ...(options.body ? {"Content-Type":"application/json"} : {}), ...(options.headers||{})};
-  const response = await fetch(path,{...options,headers});
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  let response;
+  try {
+    response = await fetch(path,{...options,headers,signal:controller.signal});
+  } catch (error) {
+    if (error && error.name === "AbortError") throw new Error("Request timed out after 12 seconds");
+    throw new Error("Cannot reach the Worker API. Check the domain and deployment.");
+  } finally {
+    clearTimeout(timeout);
+  }
   const data = await response.json().catch(()=>({error:"Invalid server response"}));
   if (!response.ok) throw new Error(data.error || ("HTTP "+response.status));
   return data;
@@ -128,13 +143,43 @@ async function submitForm(id, path, transform=(o)=>o, success="Saved") {
     } catch(e) { msg(e.message,"error"); }
   }, {once:false});
 }
-$("loginBtn").addEventListener("click", async ()=>{
-  key=$("adminKey").value.trim(); if(!key){msg("Enter the admin key","error","loginMsg");return;}
-  try { await api("/v1/admin/topics"); sessionStorage.setItem("ngw_admin_key",key); showApp(); await load(); hideMsg("loginMsg"); }
-  catch(e){msg(e.message,"error","loginMsg");}
+$("loginBtn").addEventListener("click", async (event)=>{
+  event.preventDefault();
+  const enteredKey=$("adminKey").value.trim();
+  if(!enteredKey){msg("Enter the admin key","error","loginMsg");return;}
+  const button=$("loginBtn");
+  button.disabled=true;
+  button.textContent="Connecting…";
+  msg("Connecting to the gateway…","ok","loginMsg");
+  try {
+    // Validate the key before changing views. A successful response means the
+    // Worker accepted the admin key, not merely that the endpoint is reachable.
+    key=enteredKey;
+    await api("/v1/admin/topics");
+    saveKey(key);
+    showApp();
+    showTab("overview");
+    try {
+      await load();
+      hideMsg("loginMsg");
+      msg("Connected successfully.");
+    } catch(loadError) {
+      // Keep the authenticated dashboard visible if a secondary list endpoint
+      // fails, and show the error in the visible dashboard instead of hidden login UI.
+      msg("Connected, but some dashboard data could not be loaded: "+loadError.message,"error");
+    }
+  } catch(e) {
+    key="";
+    clearSavedKey();
+    showLogin();
+    msg("Login failed: "+(e.message || "Check the admin key and Worker deployment."),"error","loginMsg");
+  } finally {
+    button.disabled=false;
+    button.textContent="Connect";
+  }
 });
 $("adminKey").addEventListener("keydown",e=>{if(e.key==="Enter")$("loginBtn").click()});
-$("logoutBtn").addEventListener("click",()=>{sessionStorage.removeItem("ngw_admin_key");key="";$("adminKey").value="";showLogin()});
+$("logoutBtn").addEventListener("click",()=>{clearSavedKey();key="";$("adminKey").value="";showLogin()});
 $("refreshBtn").addEventListener("click",()=>load().then(()=>msg("Data refreshed")).catch(e=>msg(e.message,"error")));
 document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>showTab(b.dataset.tab)));
 $("destType").addEventListener("change",()=>{
@@ -166,7 +211,7 @@ document.addEventListener("click",async e=>{
   try{await api("/v1/admin/"+entity+"/"+b.dataset.id+"/disable",{method:"POST"});await load();msg("Record disabled.");}
   catch(err){msg(err.message,"error");}
 });
-if(key){$("adminKey").value=key;showApp();load().catch(e=>{sessionStorage.removeItem("ngw_admin_key");key="";showLogin();msg(e.message,"error","loginMsg")});}
+if(key){$("adminKey").value=key;showApp();load().catch(e=>{clearSavedKey();key="";showLogin();msg(e.message,"error","loginMsg")});}
 })();
 </script>
 </body>
