@@ -27,7 +27,7 @@ label{display:block;color:var(--muted);font-size:13px}textarea{min-height:75px;r
 <section id="login" class="panel">
 <h2>Admin sign in</h2><p>Enter the ADMIN_API_KEY configured as a Cloudflare Worker secret. The key is held in this tab's session storage only.</p>
 <label for="adminKey">Admin API key</label><input id="adminKey" type="password" autocomplete="current-password" placeholder="Paste admin key">
-<button type="button" class="primary" id="loginBtn">Connect</button><div id="loginMsg" class="notice hidden"></div>
+<button type="button" class="primary" id="loginBtn" onclick="window.connectAdmin()">Connect</button><div id="loginMsg" class="notice hidden"></div>
 </section>
 <section id="app" class="hidden">
 <div id="message" class="notice hidden"></div>
@@ -143,18 +143,23 @@ async function submitForm(id, path, transform=(o)=>o, success="Saved") {
     } catch(e) { msg(e.message,"error"); }
   }, {once:false});
 }
-$("loginBtn").addEventListener("click", async (event)=>{
-  event.preventDefault();
-  const enteredKey=$("adminKey").value.trim();
-  if(!enteredKey){msg("Enter the admin key","error","loginMsg");return;}
-  const button=$("loginBtn");
-  button.disabled=true;
-  button.textContent="Connecting…";
-  msg("Connecting to the gateway…","ok","loginMsg");
+// Expose the login action explicitly so the button can invoke it directly.
+// This also makes failures visible if an event listener was not attached.
+window.connectAdmin = async function () {
+  const button = $("loginBtn");
+  const enteredKey = $("adminKey").value.trim();
+  if (!enteredKey) {
+    msg("Enter the admin key", "error", "loginMsg");
+    $("adminKey").focus();
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = "Connecting…";
+  msg("Connecting to the gateway…", "ok", "loginMsg");
+
   try {
-    // Validate the key before changing views. A successful response means the
-    // Worker accepted the admin key, not merely that the endpoint is reachable.
-    key=enteredKey;
+    key = enteredKey;
     await api("/v1/admin/topics");
     saveKey(key);
     showApp();
@@ -163,22 +168,22 @@ $("loginBtn").addEventListener("click", async (event)=>{
       await load();
       hideMsg("loginMsg");
       msg("Connected successfully.");
-    } catch(loadError) {
-      // Keep the authenticated dashboard visible if a secondary list endpoint
-      // fails, and show the error in the visible dashboard instead of hidden login UI.
-      msg("Connected, but some dashboard data could not be loaded: "+loadError.message,"error");
+    } catch (loadError) {
+      msg("Login succeeded, but dashboard data could not be loaded: " + loadError.message, "error");
     }
-  } catch(e) {
-    key="";
+  } catch (error) {
+    key = "";
     clearSavedKey();
     showLogin();
-    msg("Login failed: "+(e.message || "Check the admin key and Worker deployment."),"error","loginMsg");
+    msg("Login failed: " + (error.message || "Check the admin key and Worker deployment."), "error", "loginMsg");
   } finally {
-    button.disabled=false;
-    button.textContent="Connect";
+    button.disabled = false;
+    button.textContent = "Connect";
   }
+};
+$("adminKey").addEventListener("keydown", event => {
+  if (event.key === "Enter") window.connectAdmin();
 });
-$("adminKey").addEventListener("keydown",e=>{if(e.key==="Enter")$("loginBtn").click()});
 $("logoutBtn").addEventListener("click",()=>{clearSavedKey();key="";$("adminKey").value="";showLogin()});
 $("refreshBtn").addEventListener("click",()=>load().then(()=>msg("Data refreshed")).catch(e=>msg(e.message,"error")));
 document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>showTab(b.dataset.tab)));
