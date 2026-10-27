@@ -25,9 +25,12 @@ label{display:block;color:var(--muted);font-size:13px}textarea{min-height:75px;r
 <header><div><h1>Universal Notification Gateway</h1><p>Admin console · topics, sources, destinations, groups and subscriptions</p></div><div class="top-actions"><button id="refreshBtn" class="hidden">Refresh data</button><button id="logoutBtn" class="hidden">Log out</button></div></header>
 <main>
 <section id="login" class="panel">
-<h2>Admin sign in</h2><p>Enter the ADMIN_API_KEY configured as a Cloudflare Worker secret. The key is held in this tab's session storage only.</p>
-<label for="adminKey">Admin API key</label><input id="adminKey" type="password" autocomplete="current-password" placeholder="Paste admin key">
-<button type="button" class="primary" id="loginBtn" onclick="window.connectAdmin()">Connect</button><div id="loginMsg" class="notice hidden"></div>
+<h2>Admin sign in</h2><p>Sign in with the username and password registered in the gateway D1 database.</p>
+<form id="loginForm" autocomplete="on">
+<label for="loginUsername">Username</label><input id="loginUsername" name="username" type="text" autocomplete="username" required maxlength="64" placeholder="Admin username">
+<label for="loginPassword">Password</label><input id="loginPassword" name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="Admin password">
+<button class="primary" id="loginBtn" type="submit">Sign in</button>
+</form><div id="loginMsg" class="notice hidden" role="status" aria-live="polite"></div>
 </section>
 <section id="app" class="hidden">
 <div id="message" class="notice hidden"></div>
@@ -145,46 +148,22 @@ async function submitForm(id, path, transform=(o)=>o, success="Saved") {
 }
 // Expose the login action explicitly so the button can invoke it directly.
 // This also makes failures visible if an event listener was not attached.
-window.connectAdmin = async function () {
-  const button = $("loginBtn");
-  const enteredKey = $("adminKey").value.trim();
-  if (!enteredKey) {
-    msg("Enter the admin key", "error", "loginMsg");
-    $("adminKey").focus();
-    return;
-  }
-
-  button.disabled = true;
-  button.textContent = "Connecting…";
-  msg("Connecting to the gateway…", "ok", "loginMsg");
-
+$("loginForm").addEventListener("submit", async (event)=>{
+  event.preventDefault();
+  const username=$("loginUsername").value.trim(), password=$("loginPassword").value, button=$("loginBtn");
+  if(!username || !password){msg("Enter both username and password.","error","loginMsg");return;}
+  button.disabled=true; button.textContent="Signing in…"; msg("Checking credentials against D1…","ok","loginMsg");
   try {
-    key = enteredKey;
-    await api("/v1/admin/topics");
-    saveKey(key);
-    showApp();
-    showTab("overview");
-    try {
-      await load();
-      hideMsg("loginMsg");
-      msg("Connected successfully.");
-    } catch (loadError) {
-      msg("Login succeeded, but dashboard data could not be loaded: " + loadError.message, "error");
-    }
-  } catch (error) {
-    key = "";
-    clearSavedKey();
-    showLogin();
-    msg("Login failed: " + (error.message || "Check the admin key and Worker deployment."), "error", "loginMsg");
-  } finally {
-    button.disabled = false;
-    button.textContent = "Connect";
-  }
-};
-$("adminKey").addEventListener("keydown", event => {
-  if (event.key === "Enter") window.connectAdmin();
+    const response=await fetch("/v1/auth/login",{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},cache:"no-store",body:JSON.stringify({username,password})});
+    const result=await response.json().catch(()=>({error:"The server returned an invalid response."}));
+    if(!response.ok || !result.token) throw new Error(result.error || ("Login failed (HTTP "+response.status+")"));
+    key=result.token; sessionStorage.setItem("ngw_admin_key",key); $("loginPassword").value=""; showApp(); showTab("overview");
+    try { await load(); hideMsg("loginMsg"); msg("Signed in as "+(result.username||username)+"."); }
+    catch(loadError){msg("Signed in, but dashboard data failed to load: "+loadError.message,"error");}
+  } catch(error) { key=""; sessionStorage.removeItem("ngw_admin_key"); showLogin(); msg(error.message||"Could not reach the login service.","error","loginMsg"); }
+  finally {button.disabled=false;button.textContent="Sign in";}
 });
-$("logoutBtn").addEventListener("click",()=>{clearSavedKey();key="";$("adminKey").value="";showLogin()});
+$("logoutBtn").addEventListener("click",async()=>{try{if(key)await fetch("/v1/auth/logout",{method:"POST",headers:{Authorization:"Bearer "+key},cache:"no-store"});}catch(_){}sessionStorage.removeItem("ngw_admin_key");key="";$("loginPassword").value="";showLogin()});
 $("refreshBtn").addEventListener("click",()=>load().then(()=>msg("Data refreshed")).catch(e=>msg(e.message,"error")));
 document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>showTab(b.dataset.tab)));
 $("destType").addEventListener("change",()=>{
@@ -216,7 +195,7 @@ document.addEventListener("click",async e=>{
   try{await api("/v1/admin/"+entity+"/"+b.dataset.id+"/disable",{method:"POST"});await load();msg("Record disabled.");}
   catch(err){msg(err.message,"error");}
 });
-if(key){$("adminKey").value=key;showApp();load().catch(e=>{clearSavedKey();key="";showLogin();msg(e.message,"error","loginMsg")});}
+if(key){showApp();load().catch(e=>{sessionStorage.removeItem("ngw_admin_key");key="";showLogin();msg("Your session expired. Please sign in again. "+e.message,"error","loginMsg")});}
 })();
 </script>
 </body>
@@ -304,13 +283,55 @@ async function readJson(request) {
 
 async function requireAdmin(request, env) {
   const supplied = bearer(request);
-  if (!supplied || !env.ADMIN_API_KEY) return false;
-  // Constant-time comparison of fixed-size hashes.
-  const [a, b] = await Promise.all([sha256Hex(supplied), sha256Hex(env.ADMIN_API_KEY)]);
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  if (!supplied || supplied.length > 200) return false;
+  const tokenHash = await sha256Hex(supplied);
+  const session = await env.DB.prepare(`
+    SELECT s.token_hash FROM admin_sessions s
+    JOIN admin_users u ON u.username = s.username
+    WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.enabled = 1
+    LIMIT 1
+  `).bind(tokenHash).first();
+  return !!session;
+}
+
+const ADMIN_PASSWORD_ITERATIONS = 210000;
+function base64ToBytes(value) {
+  const raw = atob(value);
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+async function verifyAdminPassword(password, saltBase64, expectedBase64, iterations) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({name:'PBKDF2', hash:'SHA-256', salt:base64ToBytes(saltBase64), iterations:Number(iterations)||ADMIN_PASSWORD_ITERATIONS}, key, 256);
+  const actual = new Uint8Array(bits), expected = base64ToBytes(expectedBase64);
+  if (actual.length !== expected.length) return false;
+  let diff = 0; for (let i=0;i<actual.length;i++) diff |= actual[i] ^ expected[i];
   return diff === 0;
+}
+async function handleAdminLogin(request, env) {
+  let body;
+  try { body = await readJson(request); } catch (error) { return fail(error.message, 400); }
+  const username = typeof body.username === 'string' ? body.username.trim() : '';
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(username) || password.length < 1 || password.length > 256) return fail('Enter a valid username and password.', 400);
+  const user = await env.DB.prepare('SELECT username, salt, password_hash, iterations, enabled FROM admin_users WHERE username = ? LIMIT 1').bind(username).first();
+  let valid = false;
+  try {
+    if (user && user.enabled === 1) valid = await verifyAdminPassword(password, user.salt, user.password_hash, user.iterations);
+    else await verifyAdminPassword(password, 'MDEyMzQ1Njc4OWFiY2RlZg==', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=', ADMIN_PASSWORD_ITERATIONS);
+  } catch (error) {
+    console.error('admin_password_verify_failed', {message:error instanceof Error ? error.message : 'unknown'});
+    return fail('Authentication service is not configured correctly.', 500);
+  }
+  if (!valid) return fail('Invalid username or password.', 401);
+  const token = randomToken('ngw_session'), tokenHash = await sha256Hex(token);
+  await env.DB.prepare("DELETE FROM admin_sessions WHERE expires_at <= datetime('now')").run();
+  await env.DB.prepare("INSERT INTO admin_sessions (token_hash, username, expires_at) VALUES (?, ?, datetime('now', '+8 hours'))").bind(tokenHash, user.username).run();
+  return json({ok:true, token, username:user.username, expires_in:28800});
+}
+async function handleAdminLogout(request, env) {
+  const supplied = bearer(request);
+  if (supplied) await env.DB.prepare('DELETE FROM admin_sessions WHERE token_hash = ?').bind(await sha256Hex(supplied)).run();
+  return json({ok:true, logged_out:true});
 }
 
 async function requireSource(request, env) {
@@ -801,6 +822,10 @@ export default {
         response = json({ ok: true, service: "universal-notification-gateway" });
       } else if (url.pathname === "/v1/notify" && request.method === "POST") {
         response = await handleNotify(request, env);
+      } else if (url.pathname === "/v1/auth/login" && request.method === "POST") {
+        response = await handleAdminLogin(request, env);
+      } else if (url.pathname === "/v1/auth/logout" && request.method === "POST") {
+        response = await handleAdminLogout(request, env);
       } else if (url.pathname.startsWith("/v1/admin/")) {
         if (!["GET", "POST", "PATCH"].includes(request.method)) response = fail("Method not allowed", 405);
         else response = await adminRoute(request, env, url);
