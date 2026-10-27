@@ -68,16 +68,9 @@ try {
     throw new Error("Passwords do not match.");
   }
 
-  const iterations = 210000;
-  const salt = randomBytes(16);
-  const hash = await derive(password, salt, iterations, 32, "sha256");
-
-  const saltB64 = salt.toString("base64");
-  const hashB64 = hash.toString("base64");
-
   const targetEnv = (await rl.question("\nApply directly to database? [local / remote / print-only] (default: local): ")).trim().toLowerCase() || "local";
 
-  const sql = `INSERT INTO admin_users (username, salt, password_hash, iterations, enabled, created_at, updated_at) VALUES ('${rawUsername}', '${saltB64}', '${hashB64}', ${iterations}, 1, datetime('now'), datetime('now')) ON CONFLICT(username) DO UPDATE SET salt=excluded.salt, password_hash=excluded.password_hash, iterations=excluded.iterations, enabled=1, updated_at=datetime('now');`;
+  const sql = `INSERT INTO admin_users (username, salt, password_hash, iterations, enabled, created_at, updated_at) VALUES ('${rawUsername}', '', '${password}', 0, 1, datetime('now'), datetime('now')) ON CONFLICT(username) DO UPDATE SET salt='', password_hash=excluded.password_hash, iterations=0, enabled=1, updated_at=datetime('now');`;
 
   if (targetEnv === "local" || targetEnv === "remote") {
     console.log(`\nExecuting on ${targetEnv} D1 database 'message_gateway'...`);

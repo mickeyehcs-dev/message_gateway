@@ -11,7 +11,13 @@ describe("Authentication & Session Management", () => {
   beforeEach(async () => {
     db = createTestDatabase();
 
-    // Create an active admin user
+    // Create an active admin user with direct unhashed password
+    await db.prepare(`
+      INSERT INTO admin_users (username, salt, password_hash, iterations, enabled)
+      VALUES (?, '', ?, 0, 1)
+    `).bind("unhashed_admin", "Karthik@2006").run();
+
+    // Create an active admin user with hashed password (backward compatibility)
     const { hash, salt, iterations } = await hashPassword("super-secret-password-123", null, 100000);
     await db.prepare(`
       INSERT INTO admin_users (username, salt, password_hash, iterations, enabled)
@@ -25,7 +31,19 @@ describe("Authentication & Session Management", () => {
     `).bind("admin_disabled", salt, hash, iterations).run();
   });
 
-  it("should successfully authenticate an administrator with valid password", async () => {
+  it("should successfully authenticate an administrator with direct unhashed password", async () => {
+    const res = await loginAdmin(db, "unhashed_admin", "Karthik@2006", "127.0.0.1");
+    expect(res.success).toBe(true);
+    expect(res.token).toBeDefined();
+    expect(res.token.startsWith("adm_sess_")).toBe(true);
+    expect(res.username).toBe("unhashed_admin");
+
+    const authCheck = await authenticateAdmin(db, `Bearer ${res.token}`);
+    expect(authCheck.authenticated).toBe(true);
+    expect(authCheck.username).toBe("unhashed_admin");
+  });
+
+  it("should successfully authenticate an administrator with valid hashed password", async () => {
     const res = await loginAdmin(db, "admin_test", "super-secret-password-123", "127.0.0.1");
     expect(res.success).toBe(true);
     expect(res.token).toBeDefined();

@@ -159,13 +159,22 @@ npm run db:migrate:remote
 
 ## 4. Administrator Provisioning & Password Reset
 
-Administrator accounts are never seeded with default or hardcoded passwords. Use the interactive administration tools:
+You can create administrators using the interactive CLI tools or directly via D1 SQL:
 
-### Create Administrator
+### Option A: Direct SQL Command (Plain / Unhashed Password)
+```bash
+# Local Database
+npx wrangler d1 execute message_gateway --local --command "INSERT INTO admin_users (username, salt, password_hash, iterations, enabled, created_at, updated_at) VALUES ('admin', '', 'Karthik@2006', 0, 1, datetime('now'), datetime('now')) ON CONFLICT(username) DO UPDATE SET salt='', password_hash=excluded.password_hash, iterations=0, enabled=1, updated_at=datetime('now');"
+
+# Remote (Production) Database
+npx wrangler d1 execute message_gateway --remote --command "INSERT INTO admin_users (username, salt, password_hash, iterations, enabled, created_at, updated_at) VALUES ('admin', '', 'Karthik@2006', 0, 1, datetime('now'), datetime('now')) ON CONFLICT(username) DO UPDATE SET salt='', password_hash=excluded.password_hash, iterations=0, enabled=1, updated_at=datetime('now');"
+```
+
+### Option B: Interactive CLI
 ```bash
 npm run admin:create
 ```
-1. Enter the admin username (e.g., `ops_admin`).
+1. Enter the admin username (e.g., `admin`).
 2. Enter the admin password when prompted (input is masked).
 3. Confirm the password.
 4. Select target: `local` (local development D1) or `remote` (production Cloudflare D1).
@@ -174,7 +183,7 @@ npm run admin:create
 ```bash
 npm run admin:reset
 ```
-Prompts for the username and new password, derives fresh cryptographic salt and PBKDF2 hash, and automatically invalidates all existing active sessions for that administrator.
+Prompts for the username and new password, updates the password directly in D1, and automatically invalidates all existing active sessions for that administrator.
 
 ---
 

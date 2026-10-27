@@ -63,16 +63,9 @@ try {
     throw new Error("Passwords do not match.");
   }
 
-  const iterations = 210000;
-  const salt = randomBytes(16);
-  const hash = await derive(newPassword, salt, iterations, 32, "sha256");
-
-  const saltB64 = salt.toString("base64");
-  const hashB64 = hash.toString("base64");
-
   const targetEnv = (await rl.question("\nApply directly to database? [local / remote / print-only] (default: local): ")).trim().toLowerCase() || "local";
 
-  const sql = `UPDATE admin_users SET salt='${saltB64}', password_hash='${hashB64}', iterations=${iterations}, enabled=1, updated_at=datetime('now') WHERE username='${rawUsername}'; DELETE FROM admin_sessions WHERE username='${rawUsername}';`;
+  const sql = `UPDATE admin_users SET salt='', password_hash='${newPassword}', iterations=0, enabled=1, updated_at=datetime('now') WHERE username='${rawUsername}'; DELETE FROM admin_sessions WHERE username='${rawUsername}';`;
 
   if (targetEnv === "local" || targetEnv === "remote") {
     console.log(`\nUpdating ${targetEnv} D1 database 'message_gateway'...`);

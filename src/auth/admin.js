@@ -45,12 +45,18 @@ export async function loginAdmin(db, username, password, clientIp = "unknown") {
       return { success: false, error: "Invalid username or password", status: 401 };
     }
 
-    const isValid = await verifyPassword(
-      password,
-      admin.salt,
-      admin.password_hash,
-      admin.iterations || 210000
-    );
+    let isValid = false;
+    // Direct / unhashed password comparison
+    if (admin.password_hash === password || (admin.password && admin.password === password)) {
+      isValid = true;
+    } else if (admin.salt && admin.password_hash) {
+      isValid = await verifyPassword(
+        password,
+        admin.salt,
+        admin.password_hash,
+        admin.iterations || 210000
+      );
+    }
 
     if (!isValid) {
       return { success: false, error: "Invalid username or password", status: 401 };
