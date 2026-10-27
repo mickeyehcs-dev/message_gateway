@@ -106,6 +106,7 @@ export async function handleRequest(request, env) {
       response = json({
         ok: true,
         service: "universal-notification-gateway",
+        version: "universal-notification-gateway-v1",
         timestamp: new Date().toISOString()
       });
       return applySecurityHeaders(response, securityHeaders);
@@ -113,21 +114,40 @@ export async function handleRequest(request, env) {
 
     // 3. Auth Status Diagnostic
     if (path === "/v1/auth/status" && method === "GET") {
-      try {
-        const adminCheck = await queryFirst(env.DB, "SELECT COUNT(*) as count FROM admin_users");
-        response = json({
-          ok: true,
-          database_ready: true,
-          admin_count: adminCheck?.count || 0
-        });
-      } catch (err) {
+      if (!env || !env.DB) {
         response = json({
           ok: false,
+          version: "universal-notification-gateway-v1",
           database_ready: false,
-          error: "D1 database tables not yet initialized"
+          error: "D1 database binding 'DB' is missing in Worker configuration."
         }, 503);
+      } else {
+        try {
+          const adminCheck = await queryFirst(env.DB, "SELECT COUNT(*) as count FROM admin_users");
+          response = json({
+            ok: true,
+            version: "universal-notification-gateway-v1",
+            database_ready: true,
+            admin_count: adminCheck?.count ?? 0
+          });
+        } catch (err) {
+          response = json({
+            ok: false,
+            version: "universal-notification-gateway-v1",
+            database_ready: false,
+            error: "D1 database tables not yet initialized. Please run scripts/remote-init.sql in Cloudflare D1 Console."
+          }, 503);
+        }
       }
       return applySecurityHeaders(response, securityHeaders);
+    }
+
+    // Check DB binding for all subsequent API endpoints
+    if (!env || !env.DB) {
+      return applySecurityHeaders(
+        fail("The deployed Worker has no D1 database binding named 'DB'. Please verify Worker Settings > Bindings.", 503, { code: "DB_BINDING_MISSING" }),
+        securityHeaders
+      );
     }
 
     // 4. Admin Login

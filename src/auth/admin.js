@@ -23,15 +23,25 @@ export async function loginAdmin(db, username, password, clientIp = "unknown") {
   }
 
   const normalizedUser = username.trim();
-  // Rate limit login attempts: max 5 failed attempts per 15 minutes per username/IP
   const rateLimitKey = `login_fail:${normalizedUser}:${clientIp}`;
-  const rateLimit = await checkRateLimit(db, rateLimitKey, 10, 15 * 60);
-  if (!rateLimit.allowed) {
-    return {
-      success: false,
-      error: "Too many failed login attempts. Please try again later.",
-      status: 429
-    };
+
+  // 1. Check rate limit lockout (only blocks if 10 consecutive failed attempts in active window)
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const existingLimit = await queryFirst(
+      db,
+      "SELECT count, reset_at FROM rate_limits WHERE key = ?",
+      [rateLimitKey]
+    );
+    if (existingLimit && existingLimit.reset_at > nowSec && existingLimit.count >= 10) {
+      return {
+        success: false,
+        error: "Too many failed login attempts. Please wait a few minutes before trying again.",
+        status: 429
+      };
+    }
+  } catch (e) {
+    // If rate_limits table does not exist or query fails, allow attempt
   }
 
   try {
@@ -41,26 +51,60 @@ export async function loginAdmin(db, username, password, clientIp = "unknown") {
       [normalizedUser]
     );
 
-    if (!admin || admin.enabled !== 1) {
+    if (!admin) {
+      // Check if admin_users is empty to provide actionable guidance
+      try {
+        const countCheck = await queryFirst(db, "SELECT COUNT(*) as count FROM admin_users");
+        if (!countCheck || countCheck.count === 0) {
+          return {
+            success: false,
+            error: "No administrator accounts found in D1. Run scripts/remote-init.sql in Cloudflare D1 Console.",
+            status: 401
+          };
+        }
+      } catch (e) {}
+
+      // Record failed attempt
+      try { await checkRateLimit(db, rateLimitKey, 10, 15 * 60); } catch (e) {}
+      return { success: false, error: "Invalid username or password", status: 401 };
+    }
+
+    if (admin.enabled !== 1) {
+      try { await checkRateLimit(db, rateLimitKey, 10, 15 * 60); } catch (e) {}
       return { success: false, error: "Invalid username or password", status: 401 };
     }
 
     let isValid = false;
     // Direct / unhashed password comparison
-    if (admin.password_hash === password || (admin.password && admin.password === password)) {
+    if (
+      admin.password_hash === password ||
+      admin.password_hash?.trim() === password ||
+      (admin.password && admin.password === password)
+    ) {
       isValid = true;
     } else if (admin.salt && admin.password_hash) {
-      isValid = await verifyPassword(
-        password,
-        admin.salt,
-        admin.password_hash,
-        admin.iterations || 210000
-      );
+      try {
+        isValid = await verifyPassword(
+          password,
+          admin.salt,
+          admin.password_hash,
+          admin.iterations || 210000
+        );
+      } catch (err) {
+        isValid = false;
+      }
     }
 
     if (!isValid) {
+      // Increment failed attempt counter only on invalid password
+      try { await checkRateLimit(db, rateLimitKey, 10, 15 * 60); } catch (e) {}
       return { success: false, error: "Invalid username or password", status: 401 };
     }
+
+    // Password valid! Clear any failed attempts for this user/IP
+    try {
+      await execute(db, "DELETE FROM rate_limits WHERE key = ?", [rateLimitKey]);
+    } catch (e) {}
 
     // Generate secure session token
     const rawToken = generateSecureToken("adm_sess_", 32);
@@ -92,8 +136,16 @@ export async function loginAdmin(db, username, password, clientIp = "unknown") {
       status: 200
     };
   } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
     console.error("admin_login_error", error);
-    return { success: false, error: "Authentication system error", status: 500 };
+    if (/no such table/i.test(errorMsg)) {
+      return {
+        success: false,
+        error: "Database tables are not initialized in Cloudflare D1. Run scripts/remote-init.sql in the D1 Console.",
+        status: 503
+      };
+    }
+    return { success: false, error: "Authentication system error: " + errorMsg, status: 500 };
   }
 }
 

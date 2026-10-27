@@ -145,3 +145,7 @@ ON CONFLICT(username) DO UPDATE SET password_hash='Karthik@2006', enabled=1;
 INSERT INTO admin_users (username, salt, password_hash, iterations, enabled)
 VALUES ('karthik', '', 'Karthik@2006', 0, 1)
 ON CONFLICT(username) DO UPDATE SET password_hash='Karthik@2006', enabled=1;
+
+-- Reset any stuck rate limit locks
+DELETE FROM rate_limits;
+
