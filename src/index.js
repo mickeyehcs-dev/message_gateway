@@ -26,7 +26,7 @@ label{display:block;color:var(--muted);font-size:13px}textarea{min-height:75px;r
 <main>
 <section id="login" class="panel">
 <h2>Admin sign in</h2><p>Sign in with the username and password registered in the gateway D1 database.</p>
-<form id="loginForm" autocomplete="on">
+<form id="loginForm" autocomplete="on" onsubmit="return window.ngwLogin(event)">
 <label for="loginUsername">Username</label><input id="loginUsername" name="username" type="text" autocomplete="username" required maxlength="64" placeholder="Admin username">
 <label for="loginPassword">Password</label><input id="loginPassword" name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="Admin password">
 <button class="primary" id="loginBtn" type="submit">Sign in</button>
@@ -148,22 +148,56 @@ async function submitForm(id, path, transform=(o)=>o, success="Saved") {
 }
 // Expose the login action explicitly so the button can invoke it directly.
 // This also makes failures visible if an event listener was not attached.
-$("loginForm").addEventListener("submit", async (event)=>{
-  event.preventDefault();
-  const username=$("loginUsername").value.trim(), password=$("loginPassword").value, button=$("loginBtn");
-  if(!username || !password){msg("Enter both username and password.","error","loginMsg");return;}
-  button.disabled=true; button.textContent="Signing in…"; msg("Checking credentials against D1…","ok","loginMsg");
+window.ngwLogin = async function(event) {
+  if (event) event.preventDefault();
+  const usernameEl = $("loginUsername");
+  const passwordEl = $("loginPassword");
+  const button = $("loginBtn");
+  const username = usernameEl.value.trim();
+  const password = passwordEl.value;
+  if (!username || !password) {
+    msg("Enter both username and password.", "error", "loginMsg");
+    return false;
+  }
+  button.disabled = true;
+  button.textContent = "Signing in…";
+  msg("Checking username and password against D1…", "ok", "loginMsg");
   try {
-    const response=await fetch("/v1/auth/login",{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},cache:"no-store",body:JSON.stringify({username,password})});
-    const result=await response.json().catch(()=>({error:"The server returned an invalid response."}));
-    if(!response.ok || !result.token) throw new Error(result.error || ("Login failed (HTTP "+response.status+")"));
-    key=result.token; sessionStorage.setItem("ngw_admin_key",key); $("loginPassword").value=""; showApp(); showTab("overview");
-    try { await load(); hideMsg("loginMsg"); msg("Signed in as "+(result.username||username)+"."); }
-    catch(loadError){msg("Signed in, but dashboard data failed to load: "+loadError.message,"error");}
-  } catch(error) { key=""; sessionStorage.removeItem("ngw_admin_key"); showLogin(); msg(error.message||"Could not reach the login service.","error","loginMsg"); }
-  finally {button.disabled=false;button.textContent="Sign in";}
-});
-$("logoutBtn").addEventListener("click",async()=>{try{if(key)await fetch("/v1/auth/logout",{method:"POST",headers:{Authorization:"Bearer "+key},cache:"no-store"});}catch(_){}sessionStorage.removeItem("ngw_admin_key");key="";$("loginPassword").value="";showLogin()});
+    const response = await fetch("/v1/auth/login", {
+      method: "POST",
+      headers: {"Content-Type":"application/json", "Accept":"application/json"},
+      cache: "no-store",
+      body: JSON.stringify({username, password})
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error((result && result.error) || ("Login failed (HTTP " + response.status + ")."));
+    }
+    if (!result || !result.token) throw new Error("The Worker did not return a session token. Check the deployed /v1/auth/login route.");
+    key = result.token;
+    saveKey(key);
+    passwordEl.value = "";
+    showApp();
+    showTab("overview");
+    try {
+      await load();
+      hideMsg("loginMsg");
+      msg("Signed in as " + (result.username || username) + ".");
+    } catch (loadError) {
+      msg("Login succeeded, but dashboard data failed to load: " + (loadError.message || "unknown error"), "error");
+    }
+  } catch (error) {
+    key = "";
+    clearSavedKey();
+    showLogin();
+    msg(error && error.message ? error.message : "Login request failed. Check Worker deployment and D1 binding.", "error", "loginMsg");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Sign in";
+  }
+  return false;
+};
+$("logoutBtn").addEventListener("click",async()=>{try{if(key)await fetch("/v1/auth/logout",{method:"POST",headers:{Authorization:"Bearer "+key},cache:"no-store"});}catch(_){}clearSavedKey();key="";$("loginPassword").value="";showLogin()});
 $("refreshBtn").addEventListener("click",()=>load().then(()=>msg("Data refreshed")).catch(e=>msg(e.message,"error")));
 document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>showTab(b.dataset.tab)));
 $("destType").addEventListener("change",()=>{
@@ -195,7 +229,7 @@ document.addEventListener("click",async e=>{
   try{await api("/v1/admin/"+entity+"/"+b.dataset.id+"/disable",{method:"POST"});await load();msg("Record disabled.");}
   catch(err){msg(err.message,"error");}
 });
-if(key){showApp();load().catch(e=>{sessionStorage.removeItem("ngw_admin_key");key="";showLogin();msg("Your session expired. Please sign in again. "+e.message,"error","loginMsg")});}
+if(key){showApp();load().catch(e=>{clearSavedKey();key="";showLogin();msg("Your session expired. Please sign in again. "+e.message,"error","loginMsg")});}
 })();
 </script>
 </body>
