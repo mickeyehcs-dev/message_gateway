@@ -1,0 +1,11 @@
+# Local Development Secrets Template
+# Copy this file to .dev.vars for local testing with wrangler dev:
+# cp .dev.vars.example .dev.vars
+# NEVER commit .dev.vars to source control!
+
+# Minimum 32-character random string used for encrypting stored destination credentials (AES-256-GCM)
+DESTINATION_ENCRYPTION_KEY=replace-with-a-secure-random-32-byte-hex-or-passphrase-0123456789
+
+# Optional: Provider credentials for testing (or configure via admin UI)
+# EMAIL_API_KEY=test-email-key
+# TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz

@@ -1,270 +1,462 @@
-# Universal Notification Gateway (Cloudflare Workers + D1)
+# Universal Notification Gateway
 
-API-first implementation with:
-- Explicit topics only (no wildcard matching)
-- Per-source API tokens and topic allow-lists
-- Individual subscriptions and recipient groups
-- Email through the configured sender API, with a separate API key and sender ID per email destination
-- Multiple Telegram bot/chat destinations
-- Multiple ntfy server/topic destinations
-- Synchronous delivery with per-destination results
-- D1 event and delivery logs
-- AES-GCM encryption for Telegram and ntfy tokens stored in D1
-- Admin API protected by `ADMIN_API_KEY`
+A production-ready, secure, and extensible Universal Notification Gateway built for **Cloudflare Workers** and **Cloudflare D1 (SQLite)**.
 
-## Important limitations
+The gateway enables registered servers, microservices, and monitoring agents to dispatch notifications across email, Telegram, and ntfy using a single unified API with source authentication, topic allow-lists, recipient group resolution, idempotency protection, and delivery audit logging.
 
-1. Synchronous delivery waits for all matching providers. The Worker has a 10-second timeout per provider; a slow provider can make the source request take a while. Cloudflare plan/runtime limits still apply.
-2. This starter has no browser dashboard. Manage it through the authenticated admin HTTP API or build a dashboard behind a proper server-side session. Do not embed `ADMIN_API_KEY` in public frontend code.
-3. Email API behavior is assumed from the provided example: one recipient per request and a successful 2xx response indicates acceptance. Verify the provider's response semantics.
-4. Do not accept arbitrary destinations from incoming source requests. Destinations are managed by the admin API.
-5. D1 is not a durable queue. With synchronous delivery, a Worker termination after a provider accepts a message but before logging can leave ambiguous delivery status. Use a Queue/outbox architecture if you later switch to asynchronous delivery.
-6. The `CORS_ORIGIN` option is optional and should only be set to one trusted origin. API clients such as servers and curl do not need CORS.
+---
 
-## Admin panel
+## Table of Contents
 
-After deployment, open the root domain `https://YOUR-WORKER-URL/` in your browser (the `/admin` path also works). Sign in with `ADMIN_API_KEY`. The key is held in the tab's `sessionStorage` and sent only to this same-origin Worker API; it is cleared when you log out or close the browser tab. Do not open the admin panel on a shared/public computer.
+1. [Architecture & Data Model](#1-architecture--data-model)
+2. [Prerequisites & Environment Configuration](#2-prerequisites--environment-configuration)
+3. [D1 Database Setup & Migrations](#3-d1-database-setup--migrations)
+4. [Administrator Provisioning & Password Reset](#4-administrator-provisioning--password-reset)
+5. [Local Development & Testing](#5-local-development--testing)
+6. [Administrative Console (Web Dashboard)](#6-administrative-console-web-dashboard)
+7. [Delivery Channels Configuration](#7-delivery-channels-configuration)
+   - [Email (HTTP Sender API)](#email-http-sender-api)
+   - [Telegram Bot](#telegram-bot)
+   - [ntfy Topics & SSRF Guardrails](#ntfy-topics--ssrf-guardrails)
+8. [Notification Submission API](#8-notification-submission-api)
+   - [Authentication & Topic Permissions](#authentication--topic-permissions)
+   - [Request Schema & Idempotency](#request-schema--idempotency)
+   - [Delivery Outcomes & Partial Failures](#delivery-outcomes--partial-failures)
+9. [Administrative REST API Reference](#9-administrative-rest-api-reference)
+10. [Security Model & Hardening](#10-security-model--hardening)
+11. [Deployment & Operations](#11-deployment--operations)
+12. [Backup, Recovery & Maintenance](#12-backup-recovery--maintenance)
+13. [Troubleshooting](#13-troubleshooting)
 
-The dashboard supports creating and listing topics, sources, destinations, recipient groups, group memberships, and subscriptions; disabling records; and viewing recent delivery logs. Source tokens are shown only once after creation, so copy them securely. Destination credentials are never displayed after creation.
+---
 
-For additional protection, put the `/admin` path behind Cloudflare Access if your deployment supports it. The API key is still required by the admin API.
+## 1. Architecture & Data Model
 
-## 1. Prerequisites
+The gateway is built with a clean modular separation of concerns:
 
-- Cloudflare account with Workers and D1
-- Node.js LTS and npm
-- Wrangler CLI (installed through this project's dev dependency)
-- Email sender API key and sender ID
-- Telegram bot token/chat ID if using Telegram
-- ntfy topic and optional token if using ntfy
-
-## 2. Configure Cloudflare
-
-From this directory:
-
-```bash
-npm install
-npx wrangler login
-npx wrangler d1 create universal-notification-gateway
+```
+├── migrations/                     # Ordered SQL schema migrations
+│   ├── 0001_initial.sql            # Core topics, sources, destinations, subscriptions
+│   ├── 0002_admin_users.sql        # Admin credentials and sessions
+│   └── 0003_schema_enhancements.sql# Distributed rate limiting, audit timestamps & indexes
+├── scripts/                        # Safe administration utilities
+│   ├── create-admin.mjs            # Interactive admin creation with masked input
+│   └── reset-password.mjs          # Safe password reset and session invalidation
+├── src/
+│   ├── index.js                    # Worker fetch handler entry point
+│   ├── router.js                   # HTTP route dispatching & security headers
+│   ├── auth/                       # Administrator and source authentication
+│   │   ├── admin.js                # PBKDF2 verification, session token hashing
+│   │   └── source.js               # API key SHA-256 verification & rate limiting
+│   ├── db/                         # Parameterized D1 query abstractions
+│   │   └── index.js
+│   ├── providers/                  # Pluggable notification channel adapters
+│   │   ├── base.js                 # Provider base class & interface
+│   │   ├── email.js                # HTTP email API adapter
+│   │   ├── telegram.js             # Telegram Bot API adapter
+│   │   ├── ntfy.js                 # ntfy topic adapter with SSRF protection
+│   │   └── index.js                # Provider factory and registry
+│   ├── security/                   # Cryptography, validation, and redaction
+│   │   ├── crypto.js               # Web Crypto PBKDF2-SHA256, AES-256-GCM, tokens
+│   │   ├── rate-limit.js           # Distributed D1 rate limiting
+│   │   ├── redaction.js            # Secret scrubbing from logs and errors
+│   │   ├── ssrf.js                 # Anti-SSRF URL validation
+│   │   └── validation.js           # Topic normalization, body bounds, HTML escaping
+│   └── ui/                         # Self-contained administration dashboard
+│       └── dashboard.js            # Dark-blue aesthetic, zero emojis, vanilla JS
+├── tests/                          # Automated Vitest test suite
+│   ├── admin-api.test.js
+│   ├── auth.test.js
+│   ├── authorization.test.js
+│   ├── providers.test.js
+│   ├── routing.test.js
+│   └── validation.test.js
+├── wrangler.jsonc                  # Cloudflare Worker and D1 configuration
+└── package.json                    # Project metadata and management scripts
 ```
 
-Copy the returned D1 `database_id` into `wrangler.jsonc`, replacing `REPLACE_WITH_D1_DATABASE_ID`.
+### Relational Entity Model
 
-Create secrets. Use a long, random admin key and a different long random encryption key (at least 32 characters). For example, generate values locally with a password manager or a cryptographically secure generator; do not commit them.
+- **`admin_users`**: Administrator usernames, cryptographic salts, PBKDF2-SHA256 hashes (210,000 iterations), enabled flag, and login audit timestamps.
+- **`admin_sessions`**: Active sessions stored **only as SHA-256 token hashes**, references to administrator, expiration timestamps, and revocation flags.
+- **`sources`**: Authorized client applications with independently revocable credentials stored as SHA-256 hashes, enabled flags, rate limits, and usage timestamps.
+- **`topics`**: Validated and normalized topic identifiers (e.g., `security.alerts`, `billing.invoices`).
+- **`source_topics`**: Explicit many-to-many permissions defining which topics each source is authorized to publish to.
+- **`destinations`**: Output notification endpoints (email, Telegram, ntfy). Secrets (API keys, bot tokens) are encrypted at rest using AES-256-GCM.
+- **`recipient_groups` & `group_members`**: Groups combining multiple destinations with duplicate membership prevention.
+- **`subscriptions`**: Rules connecting authorized recipients (individual destinations or groups) to topics, with optional source and severity filters.
+- **`events`**: Notification records containing source reference, topic, title, severity, sanitized message, metadata, processing status, and idempotency key.
+- **`delivery_logs`**: Detailed delivery attempts per destination with HTTP status codes, sanitized response excerpts, attempt counts, and timestamps.
+- **`rate_limits`**: Distributed sliding-window rate limit counters persisted in D1.
+
+---
+
+## 2. Prerequisites & Environment Configuration
+
+### Required Tools
+
+- Node.js LTS (v20 or later; v24 recommended)
+- npm (v10 or later)
+- Cloudflare account with Workers and D1 enabled
+- Wrangler CLI (`npm install` installs local project copy)
+
+### Worker Secrets
+
+Configure these secrets in Cloudflare Worker before deploying:
 
 ```bash
-npx wrangler secret put ADMIN_API_KEY
+# 1. Master encryption key (minimum 32 random characters used for AES-256-GCM destination encryption)
 npx wrangler secret put DESTINATION_ENCRYPTION_KEY
+
+# 2. Optional: Default email API key (can also be configured per destination in D1)
 npx wrangler secret put EMAIL_API_KEY
+
+# 3. Optional: Default Telegram Bot Token (can also be configured per destination in D1)
+npx wrangler secret put TELEGRAM_BOT_TOKEN
 ```
 
-Wrangler prompts for each secret. `DESTINATION_ENCRYPTION_KEY` is used to encrypt bot and ntfy tokens at rest. If you lose or change it, those stored credentials cannot be decrypted; back it up securely. To rotate it, implement a controlled re-encryption migration before replacing the secret.
+### Environment Variables (`wrangler.jsonc`)
 
-Edit `EMAIL_SENDER_ID` in `wrangler.jsonc` to a valid sender ID from your mail service. It may also be overridden per email destination.
+The following non-secret variables are maintained in `wrangler.jsonc`:
 
-Apply schema and deploy:
+- `EMAIL_API_URL`: HTTP email sender API endpoint (default: `https://sender-api.mickey.qzz.io/api/v1/send`).
+- `EMAIL_SENDER_ID`: Account sender identifier (default: `snd_mvcmbbyw`).
+- `ALLOW_HTTP_NTFY`: Set to `"true"` only if using self-hosted plain HTTP ntfy instances (default: `"false"`).
+- `CORS_ORIGIN`: Restrict CORS origin if accessing the API from an external web app (e.g., `https://dashboard.example.com`).
 
+---
+
+## 3. D1 Database Setup & Migrations
+
+The repository is configured to use the existing D1 database binding `DB` with database name `message_gateway`:
+
+```jsonc
+"d1_databases": [
+  {
+    "binding": "DB",
+    "database_name": "message_gateway",
+    "database_id": "5b0c65b9-7889-4917-8ce0-263507c1efa4",
+    "migrations_dir": "migrations"
+  }
+]
+```
+
+### Applying Schema Migrations
+
+#### Local Database (Development)
+```bash
+npm run db:migrate:local
+```
+
+#### Remote Database (Production)
 ```bash
 npm run db:migrate:remote
-npm run deploy
 ```
 
-Use the deployed `workers.dev` URL for initial testing. Add a custom domain later in the Cloudflare Worker settings if desired.
+*Note:* Migrations are ordered (`0001`, `0002`, `0003`) and idempotent. Existing production data is preserved.
 
-## 3. Admin API authentication
+---
 
-Every `/v1/admin/*` request requires:
+## 4. Administrator Provisioning & Password Reset
 
+Administrator accounts are never seeded with default or hardcoded passwords. Use the interactive administration tools:
+
+### Create Administrator
+```bash
+npm run admin:create
+```
+1. Enter the admin username (e.g., `ops_admin`).
+2. Enter the admin password when prompted (input is masked).
+3. Confirm the password.
+4. Select target: `local` (local development D1) or `remote` (production Cloudflare D1).
+
+### Reset Administrator Password
+```bash
+npm run admin:reset
+```
+Prompts for the username and new password, derives fresh cryptographic salt and PBKDF2 hash, and automatically invalidates all existing active sessions for that administrator.
+
+---
+
+## 5. Local Development & Testing
+
+### Start Local Worker Dev Server
+```bash
+# Copy local development secrets
+cp .dev.vars.example .dev.vars
+
+# Start Wrangler local server with local D1
+npm run dev
+```
+Open `http://localhost:8787` or `http://localhost:8787/admin` in your browser.
+
+### Run Automated Tests
+```bash
+npm test
+```
+The automated test suite runs 47 tests across 6 suites verifying authentication, topic permissions, routing, group expansion, provider adapters, SSRF blocking, idempotency, and admin APIs.
+
+---
+
+## 6. Administrative Console (Web Dashboard)
+
+The gateway includes a self-contained, responsive single-page administration interface served directly from the Worker at `/` and `/admin`.
+
+### Design Philosophy
+- **Dark-Blue Theme**: High-contrast dark aesthetic (`#080d1a`, `#121c33`) with restrained orange accents (`#f97316`).
+- **Zero Emojis**: Professional typography, clean status badges, and SVG icons.
+- **Secure Sessions**: Token stored only in browser `sessionStorage`, automatically expired after 24 hours or on logout, with immediate UI transition upon session expiry without full page reload.
+- **Secret Protection**: Stored secrets (bot tokens, email keys) are masked (`••••••••`) and never exposed to the client.
+
+### Dashboard Sections
+1. **Overview**: Key metrics (sources, topics, destinations, events, deliveries), recent events feed, and delivery failure breakdowns.
+2. **Sources**: Register applications, assign allowed topics, configure rate limits, view last-used timestamps, and safely rotate credentials.
+3. **Topics**: Manage topic identifiers and descriptions, view subscriber counts.
+4. **Destinations**: Configure Email, Telegram, and ntfy destinations, test connectivity directly with live results.
+5. **Recipient Groups**: Assemble destinations into named operational groups (e.g., `devops-oncall`).
+6. **Subscriptions**: Route topics to individual destinations or recipient groups with source and severity filters.
+7. **Event History**: Paginated, searchable event stream with drill-down views showing recipient outcomes and a **Retry Failed Deliveries** button.
+8. **Delivery Logs**: Detailed filterable audit trail for every external HTTP delivery attempt.
+9. **System Settings**: Real-time diagnostic check of Cloudflare Worker bindings, D1 readiness, and session purge tools.
+
+---
+
+## 7. Delivery Channels Configuration
+
+### Email (HTTP Sender API)
+- **API URL**: Configured globally in `EMAIL_API_URL` or overridden per destination.
+- **Sender ID**: Set in `EMAIL_SENDER_ID` (e.g., `snd_mvcmbbyw`).
+- **Recipient**: Validated RFC 5322 email address.
+- **Authentication**: Sent via `X-API-Key` header, encrypted at rest with AES-256-GCM.
+
+### Telegram Bot
+- **Bot Token**: Provided by `@BotFather`.
+- **Chat ID**: Numeric identifier for direct chat or group (e.g., `-1001234567890`).
+- **Formatting**: HTML formatting (`<b>[SEVERITY] Title</b>`, pre-formatted metadata). Message length bounded to 4,096 characters to prevent Telegram API errors.
+
+### ntfy Topics & SSRF Guardrails
+- **Base URL**: Defaults to `https://ntfy.sh`.
+- **Topic**: Normalized topic slug (e.g., `company-critical-alerts`).
+- **Access Token**: Optional Bearer token for private ntfy instances.
+- **SSRF Prevention**: The Worker strictly rejects destination URLs targeting:
+  - `localhost` and `127.0.0.0/8`
+  - Private IPv4 ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
+  - Cloud metadata endpoints (`169.254.169.254`)
+  - IPv6 loopback (`::1`) and unique-local ranges
+  - Plain `http://` schemes (unless `ALLOW_HTTP_NTFY="true"` is explicitly set by an administrator).
+
+---
+
+## 8. Notification Submission API
+
+Authorized applications submit notifications using standard HTTP POST requests:
+
+### Endpoint
 ```http
-Authorization: Bearer YOUR_ADMIN_API_KEY
+POST /v1/notify
+Authorization: Bearer <SOURCE_API_KEY>
 Content-Type: application/json
+Idempotency-Key: <OPTIONAL_UNIQUE_EVENT_ID>
 ```
 
-Never place the admin key in browser JavaScript, a public repository, or a website's client-side code.
-
-Set a shell variable to make examples easier:
-
-```bash
-export BASE_URL="https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev"
-read -s ADMIN_API_KEY
-export ADMIN_API_KEY
-```
-
-For each `curl` below, use `-H "Authorization: Bearer $ADMIN_API_KEY"`.
-
-## 4. Create topics
-
-```bash
-curl -sS -X POST "$BASE_URL/v1/admin/topics" \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"security.attack","description":"Security alerts"}'
-
-curl -sS -X POST "$BASE_URL/v1/admin/topics" \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"server.down","description":"Server availability"}'
-```
-
-Topic names are explicit. `*` and `server.*` are not accepted as topics or subscriptions.
-
-## 5. Create sources
-
-A source token is returned only once. Store it in the source server's secret/environment configuration.
-
-```bash
-curl -sS -X POST "$BASE_URL/v1/admin/sources" \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"production-server","allowed_topics":["server.down","security.attack"]}'
-```
-
-Copy the returned `token` immediately. The database stores only its SHA-256 hash.
-
-## 6. Create destinations
-
-### Email
-
-Each email destination is configured in the admin panel with its own recipient address, sender ID, and sender API key. The API key is encrypted in D1 using `DESTINATION_ENCRYPTION_KEY`; it is not returned by destination listing endpoints. You no longer need a global `EMAIL_API_KEY` secret. The email API URL remains configurable through `EMAIL_API_URL`.
-
-```bash
-curl -sS -X POST "$BASE_URL/v1/admin/destinations" \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"ops-email","type":"email","to":"ops@example.com","sender_id":"snd_REPLACE_ME","api_key":"REPLACE_WITH_EMAIL_API_KEY"}'
-```
-
-### Telegram
-
-Create a bot using BotFather, add it to the intended chat/group, and obtain the chat ID. Do not expose the bot token in logs or source control.
-
-```bash
-curl -sS -X POST "$BASE_URL/v1/admin/destinations" \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"security-bot-chat","type":"telegram","bot_token":"REPLACE_WITH_BOT_TOKEN","chat_id":"REPLACE_WITH_CHAT_ID"}'
-```
-
-Each destination stores one bot/chat pair. The same bot can be configured as separate destinations for separate chats.
-
-### ntfy
-
-```bash
-curl -sS -X POST "$BASE_URL/v1/admin/destinations" \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"server-alerts-topic","type":"ntfy","base_url":"https://ntfy.sh","topic":"REPLACE_WITH_PRIVATE_TOPIC","token":"OPTIONAL_NTFY_ACCESS_TOKEN"}'
-```
-
-Omit `token` for a public topic. For private alerts, use a private topic and a token supported by your ntfy server. Self-hosted ntfy base URLs should be trusted and preferably HTTPS.
-
-## 7. Create recipient groups and memberships
-
-```bash
-curl -sS -X POST "$BASE_URL/v1/admin/groups" \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"operations","description":"Operations recipients"}'
-
-# Replace group_id and destination_id with the IDs returned by creation calls.
-curl -sS -X POST "$BASE_URL/v1/admin/group-members" \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"group_id":1,"destination_id":1}'
-```
-
-A group can contain email, Telegram, and ntfy destinations.
-
-## 8. Create subscriptions
-
-Subscribe a group to a topic:
-
-```bash
-curl -sS -X POST "$BASE_URL/v1/admin/subscriptions" \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"topic":"server.down","group_id":1}'
-```
-
-Subscribe one destination only when a particular source emits critical events:
-
-```bash
-curl -sS -X POST "$BASE_URL/v1/admin/subscriptions" \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"topic":"security.attack","source_id":1,"severity":"critical","destination_id":2}'
-```
-
-A subscription with `source_id` omitted or `null` applies to every authorized source publishing that topic. A `severity` omitted or `null` matches all severities. Each subscription must target exactly one destination or one group.
-
-## 9. Send an event
-
-```bash
-curl -i -X POST "$BASE_URL/v1/notify" \
-  -H "Authorization: Bearer REPLACE_WITH_SOURCE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: prod-server-incident-2026-001" \
-  -d '{
-    "topic":"server.down",
-    "severity":"critical",
-    "message":"Production server is not responding",
-    "metadata":{"host":"prod-01","check":"https"}
-  }'
-```
-
-Successful response includes an event ID and per-destination delivery statuses. If one provider fails, the API returns HTTP `207 Multi-Status` and includes the failure. The gateway records the event before attempting deliveries.
-
-Optional fields:
-- `subject`: email subject / notification title
-- `html`: custom HTML body for email only; only send trusted HTML because it is not sanitized
-- `metadata`: JSON object included in notification context
-- `idempotency_key`: or use the `Idempotency-Key` header
-
-If a custom `html` body is supplied, it is passed directly to the mail provider. Do not allow untrusted users to control it.
-
-## 10. Query management data
-
-```bash
-curl -sS "$BASE_URL/v1/admin/topics" -H "Authorization: Bearer $ADMIN_API_KEY"
-curl -sS "$BASE_URL/v1/admin/sources" -H "Authorization: Bearer $ADMIN_API_KEY"
-curl -sS "$BASE_URL/v1/admin/destinations" -H "Authorization: Bearer $ADMIN_API_KEY"
-curl -sS "$BASE_URL/v1/admin/groups" -H "Authorization: Bearer $ADMIN_API_KEY"
-curl -sS "$BASE_URL/v1/admin/group-members" -H "Authorization: Bearer $ADMIN_API_KEY"
-curl -sS "$BASE_URL/v1/admin/subscriptions" -H "Authorization: Bearer $ADMIN_API_KEY"
-curl -sS "$BASE_URL/v1/admin/logs?limit=100" -H "Authorization: Bearer $ADMIN_API_KEY"
-```
-
-Disable records without deleting their history:
-
-```bash
-curl -sS -X POST "$BASE_URL/v1/admin/sources/1/disable" -H "Authorization: Bearer $ADMIN_API_KEY"
-curl -sS -X POST "$BASE_URL/v1/admin/destinations/1/disable" -H "Authorization: Bearer $ADMIN_API_KEY"
-curl -sS -X POST "$BASE_URL/v1/admin/subscriptions/1/disable" -H "Authorization: Bearer $ADMIN_API_KEY"
-curl -sS -X POST "$BASE_URL/v1/admin/groups/1/disable" -H "Authorization: Bearer $ADMIN_API_KEY"
-curl -sS -X POST "$BASE_URL/v1/admin/topics/1/disable" -H "Authorization: Bearer $ADMIN_API_KEY"
-```
-
-## 11. Health check
-
-```bash
-curl -sS "$BASE_URL/health"
-```
-
-Expected:
-
+### JSON Request Payload
 ```json
-{"ok":true,"service":"universal-notification-gateway"}
+{
+  "topic": "security.alerts",
+  "title": "Suspicious login detected",
+  "message": "Multiple failed SSH attempts detected from 198.51.100.24",
+  "severity": "warning",
+  "metadata": {
+    "server": "web-node-03",
+    "attempts": 5,
+    "ip": "198.51.100.24"
+  }
+}
 ```
 
-## 12. Security and operational checklist
+### Request Fields
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `topic` | String | Yes | Lowercase topic identifier matching source's permission list. |
+| `message` | String | Yes | Primary notification text content. |
+| `title` | String | No | Subject or headline (default: `[SEVERITY] topic`). |
+| `severity` | String | No | One of: `info`, `warning`, `error`, `critical` (default: `info`). |
+| `metadata` | Object | No | Key-value dictionary attached to deliveries. |
 
-- Use a custom domain and Cloudflare-managed HTTPS if desired.
-- Keep `ADMIN_API_KEY` and `DESTINATION_ENCRYPTION_KEY` as Worker secrets. Email API keys are stored encrypted per email destination in D1.
-- Rotate the email API key if it was pasted into a public or untrusted place.
-- Restrict admin endpoints further with Cloudflare Access or another admin-only control when practical.
-- Add Cloudflare rate limiting/WAF rules to `/v1/notify` and admin paths.
-- Set a maximum acceptable event rate per source; this starter does not implement per-source rate limiting itself.
-- Set D1 retention/cleanup for events and logs before volume grows.
-- Avoid sending passwords, session cookies, API keys, or sensitive personal data in messages/metadata.
-- Review email provider response semantics and Telegram/ntfy access controls before production use.
-- Delivery is synchronous and may partially succeed. A failed response does not prove that a provider did not accept a message; use idempotency and provider-side delivery IDs if the provider supports them.
+### Successful Delivery Response (HTTP 200)
+```json
+{
+  "ok": true,
+  "event_id": 42,
+  "status": "processed",
+  "stats": {
+    "total": 2,
+    "successful": 2,
+    "failed": 0,
+    "skipped": 0
+  },
+  "deliveries": [
+    {
+      "destination_id": 1,
+      "destination_name": "ops-email",
+      "provider": "email",
+      "status": "success",
+      "http_status": 200
+    },
+    {
+      "destination_id": 2,
+      "destination_name": "security-telegram",
+      "provider": "telegram",
+      "status": "success",
+      "http_status": 200
+    }
+  ]
+}
+```
+
+### Idempotency Behavior
+- If an `Idempotency-Key` header is supplied, subsequent submissions with the same key and same payload return the cached event outcome with `"idempotent_replay": true` without re-dispatching to external providers.
+- If the same `Idempotency-Key` is re-used with a **conflicting payload**, the gateway rejects the request with **HTTP 409 Conflict**.
+
+### Delivery Statuses & Partial Failures
+- `processed`: All resolved destinations accepted the notification.
+- `partial_failure`: One or more providers failed; individual failure errors are recorded in `deliveries` and `delivery_logs`.
+- `failed`: All provider attempts failed.
+- `no_subscribers`: No active subscriptions matched the topic and severity filters.
+
+---
+
+## 9. Administrative REST API Reference
+
+All `/v1/admin/*` endpoints require the header:
+```http
+Authorization: Bearer <ADMIN_SESSION_TOKEN>
+```
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/admin/overview` | Dashboard metrics and failure summary |
+| `GET` | `/v1/admin/sources` | List registered sources and topic permissions |
+| `POST` | `/v1/admin/sources` | Register a new source and generate API key |
+| `PATCH` | `/v1/admin/sources/:id` | Update source configuration or toggle status |
+| `POST` | `/v1/admin/sources/:id/rotate-key` | Invalidate previous key and issue a new key |
+| `DELETE` | `/v1/admin/sources/:id` | Remove a source |
+| `GET` | `/v1/admin/topics` | List all topics and subscriber counts |
+| `POST` | `/v1/admin/topics` | Create a new topic |
+| `PATCH` | `/v1/admin/topics/:id` | Update topic description or enabled state |
+| `DELETE` | `/v1/admin/topics/:id` | Remove topic and its subscriptions |
+| `GET` | `/v1/admin/destinations` | List destinations (secrets masked) |
+| `POST` | `/v1/admin/destinations` | Add a destination (secrets encrypted with AES-256-GCM) |
+| `PATCH` | `/v1/admin/destinations/:id` | Update destination or replace secret |
+| `POST` | `/v1/admin/destinations/:id/test` | Dispatch live test notification to destination |
+| `DELETE` | `/v1/admin/destinations/:id` | Remove a destination |
+| `GET` | `/v1/admin/groups` | List recipient groups and members |
+| `POST` | `/v1/admin/groups` | Create a recipient group |
+| `POST` | `/v1/admin/groups/:id/members` | Add destination to a group |
+| `DELETE` | `/v1/admin/groups/:id/members/:destId`| Remove destination from a group |
+| `GET` | `/v1/admin/subscriptions` | List subscriptions |
+| `POST` | `/v1/admin/subscriptions` | Create individual or group subscription |
+| `DELETE` | `/v1/admin/subscriptions/:id` | Remove subscription |
+| `GET` | `/v1/admin/events` | Paginated event history (`?limit=50&offset=0&status=...`) |
+| `GET` | `/v1/admin/events/:id` | Detailed event information and delivery log list |
+| `POST` | `/v1/admin/events/:id/retry` | Re-dispatch failed deliveries for an event |
+| `GET` | `/v1/admin/delivery-logs` | Filterable provider audit logs |
+| `GET` | `/v1/admin/settings` | Diagnostic environment check |
+| `POST` | `/v1/admin/cleanup-sessions` | Purge expired and revoked sessions |
+
+---
+
+## 10. Security Model & Hardening
+
+1. **PBKDF2-SHA256 Password Derivation**: Uses Web Crypto API with a unique 16-byte cryptographically secure random salt and 210,000 iterations.
+2. **Session Security**: Session tokens are 32-byte cryptographically random hex strings. **Only SHA-256 hashes are stored in D1**.
+3. **AES-256-GCM Encryption at Rest**: Destination bot tokens and API keys are encrypted at rest in D1 with unique IVs.
+4. **Parameterized SQL Queries**: Every database query is strictly parameterized via `db.prepare().bind()`, eliminating SQL injection.
+5. **Distributed Rate Limiting**: Distributed D1 sliding-window counters protect against brute-force administrator logins (10 failed attempts / 15 min lockout) and per-source flood attacks.
+6. **Anti-SSRF Protection**: Strict host, IP, scheme, and credential validation before dispatching to external URLs.
+7. **Secret Scrubbing**: Automatic redaction of Authorization headers, Bearer tokens, Telegram bot tokens, and URL secrets from delivery logs and error outputs.
+8. **Strict Content Security Policy**: Restricts execution to self-origin scripts, forbids external connections, and disallows iframe embedding (`X-Frame-Options: DENY`, `frame-ancestors 'none'`).
+
+---
+
+## 11. Deployment & Operations
+
+### Step-by-Step Deployment Workflow
+
+1. **Install Dependencies**:
+   ```bash
+   npm install
+   ```
+
+2. **Authenticate with Cloudflare**:
+   ```bash
+   npx wrangler login
+   ```
+
+3. **Verify Database Configuration**:
+   Ensure `wrangler.jsonc` points to database `message_gateway` (`5b0c65b9-7889-4917-8ce0-263507c1efa4`).
+
+4. **Apply Migrations to Remote D1**:
+   ```bash
+   npm run db:migrate:remote
+   ```
+
+5. **Provision Remote Administrator**:
+   ```bash
+   npm run admin:create
+   # Select "remote" when prompted to write directly to Cloudflare D1
+   ```
+
+6. **Set Worker Secrets**:
+   ```bash
+   npx wrangler secret put DESTINATION_ENCRYPTION_KEY
+   npx wrangler secret put EMAIL_API_KEY
+   ```
+
+7. **Run Tests**:
+   ```bash
+   npm test
+   ```
+
+8. **Deploy to Cloudflare Workers**:
+   ```bash
+   npm run deploy
+   ```
+
+9. **Verify Deployment**:
+   Navigate to `https://<YOUR_WORKER>.workers.dev/` and verify the `/health` and `/v1/auth/status` endpoints.
+
+---
+
+## 12. Backup, Recovery & Maintenance
+
+### D1 Database Backup
+Export database contents directly via Wrangler:
+```bash
+npx wrangler d1 export message_gateway --remote --output=./backup_$(date +%Y%m%d).sql
+```
+
+### Rotating Master Encryption Key
+If rotating `DESTINATION_ENCRYPTION_KEY`:
+1. Export existing destinations via Admin API or D1 export.
+2. Update the secret in Wrangler: `npx wrangler secret put DESTINATION_ENCRYPTION_KEY`.
+3. Re-save destinations in the dashboard with their credentials to re-encrypt with the new master key.
+
+### Session Maintenance
+Expired sessions are automatically ignored by expiration timestamps (`expires_at < datetime('now')`). They can be permanently purged anytime via the dashboard Settings tab or via API:
+```bash
+curl -X POST https://<YOUR_WORKER>.workers.dev/v1/admin/cleanup-sessions \
+  -H "Authorization: Bearer <ADMIN_SESSION_TOKEN>"
+```
+
+---
+
+## 13. Troubleshooting
+
+| Symptom | Cause | Solution |
+|---|---|---|
+| `D1 database tables not yet initialized` (503) | Migrations have not been applied to the remote database | Run `npm run db:migrate:remote`. |
+| `DESTINATION_ENCRYPTION_KEY is required` | The encryption key secret is missing | Execute `npx wrangler secret put DESTINATION_ENCRYPTION_KEY`. |
+| `Source is not authorized to publish to topic` | Topic permission not granted to source | In the dashboard, edit the source and select the topic in the multi-select box. |
+| `ntfy URL security check failed` | The target URL points to a private/loopback IP address | Verify the ntfy URL is a public HTTPS host or configure `ALLOW_HTTP_NTFY="true"`. |
+| `Too many failed login attempts` | Login rate limiter triggered | Wait 15 minutes or reset password via `npm run admin:reset`. |
