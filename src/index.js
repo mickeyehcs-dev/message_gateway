@@ -1,3 +1,4 @@
+
 const ADMIN_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -63,8 +64,6 @@ label{display:block;color:var(--muted);font-size:13px}textarea{min-height:75px;r
 <script>
 (() => {
 const $ = (id) => document.getElementById(id);
-// Storage can be blocked in some browser/privacy modes. Never let that stop
-// the login script from registering the Connect handler.
 function getSavedKey() { try { return window.sessionStorage.getItem("ngw_admin_key") || ""; } catch (_) { return ""; } }
 function saveKey(value) { try { window.sessionStorage.setItem("ngw_admin_key", value); } catch (_) {} }
 function clearSavedKey() { try { window.sessionStorage.removeItem("ngw_admin_key"); } catch (_) {} }
@@ -146,8 +145,7 @@ async function submitForm(id, path, transform=(o)=>o, success="Saved") {
     } catch(e) { msg(e.message,"error"); }
   }, {once:false});
 }
-// Expose the login action explicitly so the button can invoke it directly.
-// This also makes failures visible if an event listener was not attached.
+
 window.ngwLogin = async function(event) {
   if (event) event.preventDefault();
   const usernameEl = $("loginUsername");
@@ -161,7 +159,7 @@ window.ngwLogin = async function(event) {
   }
   button.disabled = true;
   button.textContent = "Signing in…";
-  msg("Checking username and password against D1…", "ok", "loginMsg");
+  msg("Checking credentials…", "ok", "loginMsg");
   try {
     const response = await fetch("/v1/auth/login", {
       method: "POST",
@@ -173,7 +171,7 @@ window.ngwLogin = async function(event) {
     if (!response.ok) {
       throw new Error((result && result.error) || ("Login failed (HTTP " + response.status + ")."));
     }
-    if (!result || !result.token) throw new Error("The Worker did not return a session token. Check the deployed /v1/auth/login route.");
+    if (!result || !result.token) throw new Error("The Worker did not return a session token.");
     key = result.token;
     saveKey(key);
     passwordEl.value = "";
@@ -190,13 +188,14 @@ window.ngwLogin = async function(event) {
     key = "";
     clearSavedKey();
     showLogin();
-    msg(error && error.message ? error.message : "Login request failed. Check Worker deployment and D1 binding.", "error", "loginMsg");
+    msg(error && error.message ? error.message : "Login request failed.", "error", "loginMsg");
   } finally {
     button.disabled = false;
     button.textContent = "Sign in";
   }
   return false;
 };
+
 $("logoutBtn").addEventListener("click",async()=>{try{if(key)await fetch("/v1/auth/logout",{method:"POST",headers:{Authorization:"Bearer "+key},cache:"no-store"});}catch(_){}clearSavedKey();key="";$("loginPassword").value="";showLogin()});
 $("refreshBtn").addEventListener("click",()=>load().then(()=>msg("Data refreshed")).catch(e=>msg(e.message,"error")));
 document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>showTab(b.dataset.tab)));
@@ -257,8 +256,6 @@ function fail(message, status = 400, details = undefined) {
 }
 
 function corsHeaders(request, env) {
-  // API-only by default. Set CORS_ORIGIN to one exact origin if a trusted
-  // browser-based admin UI is added later. Never use "*" with credentials.
   const origin = request.headers.get("Origin");
   const allowed = env.CORS_ORIGIN;
   if (origin && allowed && origin === allowed) {
@@ -329,43 +326,114 @@ async function requireAdmin(request, env) {
 }
 
 const ADMIN_PASSWORD_ITERATIONS = 210000;
+
 function base64ToBytes(value) {
-  const raw = atob(value);
-  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  let base64 = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  while (base64.length % 4) base64 += "=";
+  const raw = atob(base64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    bytes[i] = raw.charCodeAt(i);
+  }
+  return bytes;
 }
-async function verifyAdminPassword(password, saltBase64, expectedBase64, iterations) {
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({name:'PBKDF2', hash:'SHA-256', salt:base64ToBytes(saltBase64), iterations:Number(iterations)||ADMIN_PASSWORD_ITERATIONS}, key, 256);
-  const actual = new Uint8Array(bits), expected = base64ToBytes(expectedBase64);
+
+// Parses binary values whether generated as Hex (Node crypto) or Base64
+function parseBinary(value) {
+  if (!value || typeof value !== "string") return new Uint8Array(0);
+  const trimmed = value.trim();
+  if (/^[0-9a-fA-F]{32,}$/.test(trimmed) && trimmed.length % 2 === 0) {
+    const bytes = new Uint8Array(trimmed.length / 2);
+    for (let i = 0; i < trimmed.length; i += 2) {
+      bytes[i / 2] = parseInt(trimmed.substring(i, i + 2), 16);
+    }
+    return bytes;
+  }
+  return base64ToBytes(trimmed);
+}
+
+async function verifyAdminPassword(password, saltString, expectedString, iterations) {
+  const salt = parseBinary(saltString);
+  const expected = parseBinary(expectedString);
+  const iter = Number(iterations) || ADMIN_PASSWORD_ITERATIONS;
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"]
+  );
+
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt, iterations: iter },
+    key,
+    256
+  );
+
+  const actual = new Uint8Array(bits);
   if (actual.length !== expected.length) return false;
-  let diff = 0; for (let i=0;i<actual.length;i++) diff |= actual[i] ^ expected[i];
+  let diff = 0;
+  for (let i = 0; i < actual.length; i++) diff |= actual[i] ^ expected[i];
   return diff === 0;
 }
+
 async function handleAdminLogin(request, env) {
   let body;
-  try { body = await readJson(request); } catch (error) { return fail(error.message, 400); }
-  const username = typeof body.username === 'string' ? body.username.trim() : '';
-  const password = typeof body.password === 'string' ? body.password : '';
-  if (!/^[A-Za-z0-9._-]{1,64}$/.test(username) || password.length < 1 || password.length > 256) return fail('Enter a valid username and password.', 400);
-  const user = await env.DB.prepare('SELECT username, salt, password_hash, iterations, enabled FROM admin_users WHERE username = ? LIMIT 1').bind(username).first();
+  try {
+    body = await readJson(request);
+  } catch (error) {
+    return fail(error.message, 400);
+  }
+
+  const username = typeof body.username === "string" ? body.username.trim() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+
+  if (!username || password.length < 1 || password.length > 256) {
+    return fail("Enter a valid username and password.", 400);
+  }
+
+  const user = await env.DB.prepare(
+    "SELECT username, salt, password_hash, iterations, enabled FROM admin_users WHERE username = ? LIMIT 1"
+  ).bind(username).first();
+
   let valid = false;
   try {
-    if (user && user.enabled === 1) valid = await verifyAdminPassword(password, user.salt, user.password_hash, user.iterations);
-    else await verifyAdminPassword(password, 'MDEyMzQ1Njc4OWFiY2RlZg==', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=', ADMIN_PASSWORD_ITERATIONS);
+    if (user && user.enabled === 1) {
+      valid = await verifyAdminPassword(password, user.salt, user.password_hash, user.iterations);
+    } else {
+      // Dummy execution to prevent timing-based user enumeration
+      await verifyAdminPassword(
+        password,
+        "MDEyMzQ1Njc4OWFiY2RlZg==",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        ADMIN_PASSWORD_ITERATIONS
+      );
+    }
   } catch (error) {
-    console.error('admin_password_verify_failed', {message:error instanceof Error ? error.message : 'unknown'});
-    return fail('Authentication service is not configured correctly.', 500);
+    console.error("admin_password_verify_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return fail("Authentication service is not configured correctly.", 500);
   }
-  if (!valid) return fail('Invalid username or password.', 401);
-  const token = randomToken('ngw_session'), tokenHash = await sha256Hex(token);
+
+  if (!valid) return fail("Invalid username or password.", 401);
+
+  const token = randomToken("ngw_session");
+  const tokenHash = await sha256Hex(token);
+
   await env.DB.prepare("DELETE FROM admin_sessions WHERE expires_at <= datetime('now')").run();
-  await env.DB.prepare("INSERT INTO admin_sessions (token_hash, username, expires_at) VALUES (?, ?, datetime('now', '+8 hours'))").bind(tokenHash, user.username).run();
-  return json({ok:true, token, username:user.username, expires_in:28800});
+  await env.DB.prepare(
+    "INSERT INTO admin_sessions (token_hash, username, expires_at) VALUES (?, ?, datetime('now', '+8 hours'))"
+  ).bind(tokenHash, user.username).run();
+
+  return json({ ok: true, token, username: user.username, expires_in: 28800 });
 }
+
 async function handleAdminLogout(request, env) {
   const supplied = bearer(request);
-  if (supplied) await env.DB.prepare('DELETE FROM admin_sessions WHERE token_hash = ?').bind(await sha256Hex(supplied)).run();
-  return json({ok:true, logged_out:true});
+  if (supplied) {
+    await env.DB.prepare("DELETE FROM admin_sessions WHERE token_hash = ?").bind(await sha256Hex(supplied)).run();
+  }
+  return json({ ok: true, logged_out: true });
 }
 
 async function requireSource(request, env) {
@@ -414,7 +482,6 @@ async function logDelivery(env, eventId, destinationId, status, httpStatus, resp
 
 async function sendEmail(destination, env, message) {
   const cfg = JSON.parse(destination.config_json);
-  // Each email destination has its own API key, encrypted at rest in D1.
   const apiKey = await decryptSecret(destination.secret_ciphertext, env);
   if (!apiKey) throw new Error("Email API key is not configured for this destination");
   if (!cfg.sender_id) throw new Error("Sender ID is not configured for this destination");
@@ -465,7 +532,6 @@ async function sendNtfy(destination, env, message) {
   const cfg = JSON.parse(destination.config_json);
   const base = String(cfg.base_url || "https://ntfy.sh").replace(/\/+$/, "");
   const topic = String(cfg.topic || "");
-  // Only allow an origin-like base URL; no embedded credentials.
   const parsed = new URL(base);
   if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password) {
     throw new Error("Invalid ntfy base_url");
@@ -632,8 +698,6 @@ async function handleNotify(request, env) {
     return json({ ok: true, event_id: eventId, matched_destinations: 0, deliveries: [], message: "Event recorded; no active subscriptions matched." });
   }
 
-  // Synchronous delivery: the request waits for every matching provider call.
-  // Each provider has a 10-second timeout. Delivery failures are returned per destination.
   const deliveries = await Promise.all(destinations.map((destination) => deliverToDestination(destination, env, event)));
   const failed = deliveries.filter((item) => item.status === "failed").length;
   return json({
@@ -793,7 +857,6 @@ async function adminRoute(request, env, url) {
     } catch { return fail("Could not create subscription; verify referenced IDs and duplicate rules", 409); }
   }
 
-  // Deactivation endpoints preserve audit history.
   const disableMatch = path.match(/^\/v1\/admin\/(sources|destinations|topics|groups|subscriptions|group-members)\/(\d+)\/disable$/);
   if (method === "POST" && disableMatch) {
     const [, entity, rawId] = disableMatch;
@@ -867,10 +930,10 @@ export default {
         response = fail("Not found", 404);
       }
     } catch (error) {
-      // Do not return stack traces, environment values, or provider credentials.
       console.error("gateway_error", { path: url.pathname, message: error instanceof Error ? error.message : "unknown" });
       response = fail("Internal server error", 500);
     }
     return withCors(response, cors);
   }
 };
+
