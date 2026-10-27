@@ -5,13 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "deploy": "wrangler deploy",
-    "db:create": "wrangler d1 create universal-notification-gateway",
-    "db:migrate:local": "wrangler d1 migrations apply universal-notification-gateway --local",
-    "db:migrate:remote": "wrangler d1 migrations apply universal-notification-gateway --remote",
-    "admin:create": "node scripts/create-admin.mjs"
+    "db:migrate:local": "wrangler d1 migrations apply message_gateway --local",
+    "db:migrate:remote": "wrangler d1 migrations apply message_gateway --remote",
+    "admin:create": "node scripts/create-admin.mjs",
+    "admin:reset": "node scripts/reset-password.mjs"
   },
   "devDependencies": {
+    "vitest": "^5.0.5",
     "wrangler": "^4.0.0"
   }
 }
