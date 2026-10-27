@@ -1,4 +1,3 @@
-
 const ADMIN_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -27,7 +26,7 @@ label{display:block;color:var(--muted);font-size:13px}textarea{min-height:75px;r
 <main>
 <section id="login" class="panel">
 <h2>Admin sign in</h2><p>Sign in with the username and password registered in the gateway D1 database.</p>
-<form id="loginForm" autocomplete="on" onsubmit="return window.ngwLogin(event)">
+<form id="loginForm" autocomplete="on" onsubmit="event.preventDefault(); event.stopPropagation(); window.ngwLogin(event); return false;">
 <label for="loginUsername">Username</label><input id="loginUsername" name="username" type="text" autocomplete="username" required maxlength="64" placeholder="Admin username">
 <label for="loginPassword">Password</label><input id="loginPassword" name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="Admin password">
 <button class="primary" id="loginBtn" type="submit">Sign in</button>
@@ -107,6 +106,7 @@ function showTab(name) {
 }
 function showApp() { $("login").classList.add("hidden"); $("app").classList.remove("hidden"); $("refreshBtn").classList.remove("hidden"); $("logoutBtn").classList.remove("hidden"); }
 function showLogin() { $("login").classList.remove("hidden"); $("app").classList.add("hidden"); $("refreshBtn").classList.add("hidden"); $("logoutBtn").classList.add("hidden"); }
+
 async function load() {
   const [topics,sources,destinations,groups,members,subscriptions,logs] = await Promise.all([
     api("/v1/admin/topics"),api("/v1/admin/sources"),api("/v1/admin/destinations"),api("/v1/admin/groups"),api("/v1/admin/group-members"),api("/v1/admin/subscriptions"),api("/v1/admin/logs?limit=100")
@@ -147,19 +147,25 @@ async function submitForm(id, path, transform=(o)=>o, success="Saved") {
 }
 
 window.ngwLogin = async function(event) {
-  if (event) event.preventDefault();
+  if (event) {
+    event.preventDefault();
+    if (typeof event.stopPropagation === "function") event.stopPropagation();
+  }
   const usernameEl = $("loginUsername");
   const passwordEl = $("loginPassword");
   const button = $("loginBtn");
   const username = usernameEl.value.trim();
   const password = passwordEl.value;
+
   if (!username || !password) {
     msg("Enter both username and password.", "error", "loginMsg");
     return false;
   }
+
   button.disabled = true;
   button.textContent = "Signing in…";
   msg("Checking credentials…", "ok", "loginMsg");
+
   try {
     const response = await fetch("/v1/auth/login", {
       method: "POST",
@@ -172,17 +178,19 @@ window.ngwLogin = async function(event) {
       throw new Error((result && result.error) || ("Login failed (HTTP " + response.status + ")."));
     }
     if (!result || !result.token) throw new Error("The Worker did not return a session token.");
+
     key = result.token;
     saveKey(key);
     passwordEl.value = "";
     showApp();
     showTab("overview");
+
     try {
       await load();
       hideMsg("loginMsg");
       msg("Signed in as " + (result.username || username) + ".");
     } catch (loadError) {
-      msg("Login succeeded, but dashboard data failed to load: " + (loadError.message || "unknown error"), "error");
+      msg("Login succeeded, but data failed to load: " + (loadError.message || "unknown error"), "error");
     }
   } catch (error) {
     key = "";
@@ -228,7 +236,17 @@ document.addEventListener("click",async e=>{
   try{await api("/v1/admin/"+entity+"/"+b.dataset.id+"/disable",{method:"POST"});await load();msg("Record disabled.");}
   catch(err){msg(err.message,"error");}
 });
-if(key){showApp();load().catch(e=>{clearSavedKey();key="";showLogin();msg("Your session expired. Please sign in again. "+e.message,"error","loginMsg")});}
+
+// Auto-login from existing session storage
+if (key) {
+  showApp();
+  load().catch(e => {
+    clearSavedKey();
+    key = "";
+    showLogin();
+    msg("Your session expired. Please sign in again.", "error", "loginMsg");
+  });
+}
 })();
 </script>
 </body>
@@ -316,13 +334,21 @@ async function requireAdmin(request, env) {
   const supplied = bearer(request);
   if (!supplied || supplied.length > 200) return false;
   const tokenHash = await sha256Hex(supplied);
-  const session = await env.DB.prepare(`
-    SELECT s.token_hash FROM admin_sessions s
-    JOIN admin_users u ON u.username = s.username
-    WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.enabled = 1
-    LIMIT 1
-  `).bind(tokenHash).first();
-  return !!session;
+  try {
+    // Check with both standard ISO datetime format and unix timestamp tolerance
+    const session = await env.DB.prepare(`
+      SELECT s.token_hash FROM admin_sessions s
+      JOIN admin_users u ON u.username = s.username
+      WHERE s.token_hash = ? 
+        AND (s.expires_at > datetime('now') OR s.expires_at > datetime('now', 'localtime'))
+        AND (u.enabled = 1 OR u.enabled = '1')
+      LIMIT 1
+    `).bind(tokenHash).first();
+    return !!session;
+  } catch (err) {
+    console.error("requireAdmin error:", err);
+    return false;
+  }
 }
 
 const ADMIN_PASSWORD_ITERATIONS = 210000;
@@ -338,10 +364,10 @@ function base64ToBytes(value) {
   return bytes;
 }
 
-// Parses binary values whether generated as Hex (Node crypto) or Base64
 function parseBinary(value) {
   if (!value || typeof value !== "string") return new Uint8Array(0);
   const trimmed = value.trim();
+  // Support hex encoded hashes/salts
   if (/^[0-9a-fA-F]{32,}$/.test(trimmed) && trimmed.length % 2 === 0) {
     const bytes = new Uint8Array(trimmed.length / 2);
     for (let i = 0; i < trimmed.length; i += 2) {
@@ -393,16 +419,22 @@ async function handleAdminLogin(request, env) {
     return fail("Enter a valid username and password.", 400);
   }
 
-  const user = await env.DB.prepare(
-    "SELECT username, salt, password_hash, iterations, enabled FROM admin_users WHERE username = ? LIMIT 1"
-  ).bind(username).first();
+  let user;
+  try {
+    user = await env.DB.prepare(
+      "SELECT username, salt, password_hash, iterations, enabled FROM admin_users WHERE username = ? LIMIT 1"
+    ).bind(username).first();
+  } catch (dbErr) {
+    console.error("D1 admin_users lookup failed:", dbErr);
+    return fail("Database error: Could not query admin_users.", 500);
+  }
 
   let valid = false;
   try {
-    if (user && user.enabled === 1) {
+    if (user && (user.enabled === 1 || user.enabled === "1" || user.enabled === true)) {
       valid = await verifyAdminPassword(password, user.salt, user.password_hash, user.iterations);
     } else {
-      // Dummy execution to prevent timing-based user enumeration
+      // Dummy check to prevent timing analysis
       await verifyAdminPassword(
         password,
         "MDEyMzQ1Njc4OWFiY2RlZg==",
@@ -412,7 +444,7 @@ async function handleAdminLogin(request, env) {
     }
   } catch (error) {
     console.error("admin_password_verify_failed", { message: error instanceof Error ? error.message : "unknown" });
-    return fail("Authentication service is not configured correctly.", 500);
+    return fail("Authentication service configuration error.", 500);
   }
 
   if (!valid) return fail("Invalid username or password.", 401);
@@ -420,10 +452,15 @@ async function handleAdminLogin(request, env) {
   const token = randomToken("ngw_session");
   const tokenHash = await sha256Hex(token);
 
-  await env.DB.prepare("DELETE FROM admin_sessions WHERE expires_at <= datetime('now')").run();
-  await env.DB.prepare(
-    "INSERT INTO admin_sessions (token_hash, username, expires_at) VALUES (?, ?, datetime('now', '+8 hours'))"
-  ).bind(tokenHash, user.username).run();
+  try {
+    await env.DB.prepare("DELETE FROM admin_sessions WHERE expires_at <= datetime('now')").run();
+    await env.DB.prepare(
+      "INSERT INTO admin_sessions (token_hash, username, expires_at) VALUES (?, ?, datetime('now', '+8 hours'))"
+    ).bind(tokenHash, user.username).run();
+  } catch (sessErr) {
+    console.error("D1 session write failed:", sessErr);
+    return fail("Could not create admin session.", 500);
+  }
 
   return json({ ok: true, token, username: user.username, expires_in: 28800 });
 }
@@ -936,4 +973,3 @@ export default {
     return withCors(response, cors);
   }
 };
-
