@@ -26,7 +26,7 @@ label{display:block;color:var(--muted);font-size:13px}textarea{min-height:75px;r
 <main>
 <section id="login" class="panel">
 <h2>Admin sign in</h2><p>Sign in with the username and password registered in the gateway D1 database.</p>
-<form id="loginForm" autocomplete="on" onsubmit="event.preventDefault(); event.stopPropagation(); window.ngwLogin(event); return false;">
+<form id="loginForm" autocomplete="on">
 <label for="loginUsername">Username</label><input id="loginUsername" name="username" type="text" autocomplete="username" required maxlength="64" placeholder="Admin username">
 <label for="loginPassword">Password</label><input id="loginPassword" name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="Admin password">
 <button class="primary" id="loginBtn" type="submit">Sign in</button>
@@ -61,8 +61,133 @@ label{display:block;color:var(--muted);font-size:13px}textarea{min-height:75px;r
 </section>
 </main>
 <script>
+/* Independent login handler: this is deliberately separate from the dashboard bundle.
+   It prevents silent native form reloads if the dashboard script has a runtime error. */
+(function () {
+  var form = document.getElementById("loginForm");
+  var usernameInput = document.getElementById("loginUsername");
+  var passwordInput = document.getElementById("loginPassword");
+  var button = document.getElementById("loginBtn");
+  var notice = document.getElementById("loginMsg");
+  if (!form || !usernameInput || !passwordInput || !button || !notice) return;
+
+  function showLoginMessage(message, type) {
+    notice.textContent = message;
+    notice.className = "notice " + (type || "error");
+    notice.style.display = "block";
+  }
+  async function readJson(response) {
+    var body = await response.text();
+    if (!body) return {};
+    try { return JSON.parse(body); }
+    catch (_) { return { error: "The Worker returned a non-JSON response (HTTP " + response.status + ")." }; }
+  }
+  async function diagnoseAuth() {
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 5000);
+    try {
+      var response = await fetch("/v1/auth/status", { method: "GET", cache: "no-store", headers: { "Accept": "application/json" }, signal: controller.signal });
+      var body = await readJson(response);
+      return body.error || body.message || (body.ok ? "D1 login tables are reachable." : "Authentication diagnostic returned HTTP " + response.status + ".");
+    } catch (error) {
+      if (error && error.name === "AbortError") return "The diagnostic request timed out.";
+      return "Could not reach /v1/auth/status. Check the deployed Worker URL and network.";
+    } finally { clearTimeout(timer); }
+  }
+
+  form.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    var username = usernameInput.value.trim();
+    var password = passwordInput.value;
+    if (!username || !password) {
+      showLoginMessage("Enter both username and password.", "error");
+      return;
+    }
+    button.disabled = true;
+    button.textContent = "Signing in...";
+    showLoginMessage("Checking credentials and D1 session storage...", "ok");
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 15000);
+    var responseStatus = 0;
+    try {
+      var response = await fetch("/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ username: username, password: password }),
+        signal: controller.signal
+      });
+      responseStatus = response.status;
+      var body = await readJson(response);
+      if (!response.ok) {
+        var error = new Error(body.error || body.message || ("Login failed with HTTP " + response.status + "."));
+        error.httpStatus = response.status;
+        throw error;
+      }
+      if (!body || typeof body.token !== "string" || body.token.length < 20) {
+        throw new Error("The login endpoint did not return a valid session token. The deployed Worker and login page versions may not match.");
+      }
+      try {
+        window.sessionStorage.setItem("ngw_admin_key", body.token);
+      } catch (_) {
+        throw new Error("Your browser blocked session storage, so the login session could not be saved. Open the site in a regular browser tab and allow site storage.");
+      }
+      passwordInput.value = "";
+      showLoginMessage("Credentials accepted. Opening the admin dashboard...", "ok");
+      window.location.reload();
+    } catch (error) {
+      var message;
+      if (error && error.name === "AbortError") message = "Login timed out after 15 seconds. The Worker may be unavailable or waiting on D1.";
+      else if (error && error instanceof TypeError) message = "Network request failed. Confirm this page is served by the deployed Worker and that /v1/auth/login is on the same origin.";
+      else message = error && error.message ? error.message : "Unexpected login error.";
+      if ((error && error.httpStatus >= 500) || responseStatus >= 500 || responseStatus === 404 || responseStatus === 401 || (error && error.name === "AbortError") || (error && error instanceof TypeError)) {
+        var diagnostic = await diagnoseAuth();
+        message += "\n\nD1 / Worker check: " + diagnostic;
+      }
+      showLoginMessage(message, "error");
+      /* Do not clear username/password when authentication fails; the reason stays visible. */
+    } finally {
+      clearTimeout(timer);
+      button.disabled = false;
+      button.textContent = "Sign in";
+    }
+  }, true);
+
+  window.addEventListener("error", function (event) {
+    var detail = event && event.message ? event.message : "Unknown JavaScript error";
+    var app = document.getElementById("app");
+    if (app && !app.classList.contains("hidden")) {
+      var banner = document.getElementById("message");
+      if (banner) {
+        banner.textContent = "Dashboard JavaScript error: " + detail + (event && event.lineno ? " (line " + event.lineno + ")" : "");
+        banner.className = "notice error";
+      }
+    } else {
+      var saved = "";
+      try { saved = window.sessionStorage.getItem("ngw_admin_key") || ""; } catch (_) {}
+      if (saved) showLoginMessage("A dashboard script failed to initialize after login: " + detail + (event && event.lineno ? " (line " + event.lineno + ")" : ""), "error");
+    }
+  });
+  window.addEventListener("unhandledrejection", function (event) {
+    var detail = event && event.reason && event.reason.message ? event.reason.message : String(event ? event.reason : "Unknown async error");
+    var app = document.getElementById("app");
+    if (app && !app.classList.contains("hidden")) {
+      var banner = document.getElementById("message");
+      if (banner) { banner.textContent = "Background task failed: " + detail; banner.className = "notice error"; }
+    } else {
+      var saved = "";
+      try { saved = window.sessionStorage.getItem("ngw_admin_key") || ""; } catch (_) {}
+      if (saved) showLoginMessage("A background task failed after login: " + detail, "error");
+    }
+  });
+})();
+</script>
+<script>
 (() => {
 const $ = (id) => document.getElementById(id);
+// Storage can be blocked in some browser/privacy modes. Never let that stop
+// the login script from registering the Connect handler.
 function getSavedKey() { try { return window.sessionStorage.getItem("ngw_admin_key") || ""; } catch (_) { return ""; } }
 function saveKey(value) { try { window.sessionStorage.setItem("ngw_admin_key", value); } catch (_) {} }
 function clearSavedKey() { try { window.sessionStorage.removeItem("ngw_admin_key"); } catch (_) {} }
@@ -84,15 +209,18 @@ async function api(path, options={}) {
   } finally {
     clearTimeout(timeout);
   }
-  const data = await response.json().catch(()=>({error:"Invalid server response"}));
-  if (!response.ok) throw new Error(data.error || ("HTTP "+response.status));
+  const raw = await response.text();
+  let data;
+  try { data = raw ? JSON.parse(raw) : {}; }
+  catch (_) { data = { error: "Non-JSON response from " + path + " (HTTP " + response.status + ")." }; }
+  if (!response.ok) throw new Error(path + ": " + (data.error || ("HTTP " + response.status)));
   return data;
 }
 function table(items, columns, actions=[]) {
   if (!items || !items.length) return '<p class="muted">No records yet.</p>';
   return '<div class="table-wrap"><table><thead><tr>'+columns.map(c=>'<th>'+esc(c.label)+'</th>').join('')+(actions.length?'<th>Actions</th>':'')+'</tr></thead><tbody>'+
     items.map(item=>'<tr>'+columns.map(c=>'<td>'+esc(c.render?c.render(item):item[c.key])+'</td>').join('')+
-    (actions.length?'<td>'+actions.map(a=>'<button data-action="'+esc(a.action)+'" data-id="'+esc(item.id)+'" class="'+(a.danger?'danger':'')+'">'+esc(a.label)+'</button>').join(' '):'')+'</td></tr>').join('')+
+    (actions.length?'<td>'+actions.map(a=>'<button data-action="'+esc(a.action)+'" data-id="'+esc(item.id)+'" data-group-id="'+esc(item.group_id)+'" data-destination-id="'+esc(item.destination_id)+'" class="'+(a.danger?'danger':'')+'">'+esc(a.label)+'</button>').join(' '):'')+'</td></tr>').join('')+
     '</tbody></table></div>';
 }
 function options(el, items, label, value="id", includeBlank=false, blankLabel="—") {
@@ -106,13 +234,22 @@ function showTab(name) {
 }
 function showApp() { $("login").classList.add("hidden"); $("app").classList.remove("hidden"); $("refreshBtn").classList.remove("hidden"); $("logoutBtn").classList.remove("hidden"); }
 function showLogin() { $("login").classList.remove("hidden"); $("app").classList.add("hidden"); $("refreshBtn").classList.add("hidden"); $("logoutBtn").classList.add("hidden"); }
-
 async function load() {
-  const [topics,sources,destinations,groups,members,subscriptions,logs] = await Promise.all([
-    api("/v1/admin/topics"),api("/v1/admin/sources"),api("/v1/admin/destinations"),api("/v1/admin/groups"),api("/v1/admin/group-members"),api("/v1/admin/subscriptions"),api("/v1/admin/logs?limit=100")
-  ]);
-  cache={topics:topics.items||[],sources:sources.items||[],destinations:destinations.items||[],groups:groups.items||[],members:members.items||[],subscriptions:subscriptions.items||[],logs:logs.items||[]};
+  const requests = [
+    ["topics", "/v1/admin/topics"], ["sources", "/v1/admin/sources"],
+    ["destinations", "/v1/admin/destinations"], ["groups", "/v1/admin/groups"],
+    ["members", "/v1/admin/group-members"], ["subscriptions", "/v1/admin/subscriptions"],
+    ["logs", "/v1/admin/logs?limit=100"]
+  ];
+  const results = await Promise.allSettled(requests.map((entry) => api(entry[1])));
+  const errors = [];
+  results.forEach((result, index) => {
+    const name = requests[index][0];
+    if (result.status === "fulfilled") cache[name] = Array.isArray(result.value.items) ? result.value.items : [];
+    else errors.push(requests[index][1] + " — " + (result.reason && result.reason.message ? result.reason.message : "request failed"));
+  });
   render();
+  if (errors.length) throw new Error("Some dashboard data could not be loaded. Other sections remain available:\n" + errors.join("\n"));
 }
 function render() {
   $("stats").innerHTML=[["Topics",cache.topics.length],["Sources",cache.sources.length],["Destinations",cache.destinations.length],["Subscriptions",cache.subscriptions.length]].map(([k,v])=>'<div class="panel"><p>'+esc(k)+'</p><strong style="font-size:28px">'+v+'</strong></div>').join('');
@@ -120,7 +257,7 @@ function render() {
   $("sourcesTable").innerHTML=table(cache.sources,[{key:"name",label:"Source"},{key:"enabled",label:"Enabled"},{key:"created_at",label:"Created"}],[{action:"disable-source",label:"Disable",danger:true}]);
   $("destinationsTable").innerHTML=table(cache.destinations,[{key:"name",label:"Name"},{key:"type",label:"Type"},{key:"enabled",label:"Enabled"},{key:"config",label:"Config",render:x=>JSON.stringify(x.config)}],[{action:"disable-destination",label:"Disable",danger:true}]);
   $("groupsTable").innerHTML=table(cache.groups,[{key:"name",label:"Group"},{key:"description",label:"Description"},{key:"enabled",label:"Enabled"}],[{action:"disable-group",label:"Disable",danger:true}]);
-  $("membersTable").innerHTML=table(cache.members,[{key:"group_name",label:"Group"},{key:"destination_name",label:"Destination"},{key:"type",label:"Type"},{key:"enabled",label:"Enabled"}]);
+  $("membersTable").innerHTML=table(cache.members,[{key:"group_name",label:"Group"},{key:"destination_name",label:"Destination"},{key:"type",label:"Type"},{key:"enabled",label:"Enabled"}],[{action:"disable-member",label:"Disable membership",danger:true}]);
   $("subscriptionsTable").innerHTML=table(cache.subscriptions,[{key:"topic",label:"Topic"},{key:"source_name",label:"Source filter",render:x=>x.source_name||"All sources"},{key:"severity",label:"Severity",render:x=>x.severity||"All"},{key:"destination_name",label:"Destination",render:x=>x.destination_name||("Group: "+(x.group_name||"unknown"))},{key:"enabled",label:"Enabled"}],[{action:"disable-subscription",label:"Disable",danger:true}]);
   $("logsTable").innerHTML=table(cache.logs,[{key:"created_at",label:"Time"},{key:"topic",label:"Topic"},{key:"source_name",label:"Source"},{key:"destination_name",label:"Destination"},{key:"status",label:"Status"},{key:"http_status",label:"HTTP"},{key:"response_excerpt",label:"Response"}]);
   options($("sourceTopics"),cache.topics.filter(x=>x.enabled),x=>x.name,"name");
@@ -139,80 +276,54 @@ async function submitForm(id, path, transform=(o)=>o, success="Saved") {
   form.addEventListener("submit", async (event)=>{
     event.preventDefault(); hideMsg();
     const raw=Object.fromEntries(new FormData(form).entries());
-    try { const result=await api(path,{method:"POST",body:JSON.stringify(transform(raw,form))});
-      if(id==="sourceForm" && result.token){$("newToken").textContent="Copy this source token now; it will not be shown again:\n"+result.token;$("newToken").className="notice ok";}
-      form.reset(); await load(); msg(success+(result.token?" (source token displayed separately)":"")); 
-    } catch(e) { msg(e.message,"error"); }
+    try {
+      const result = await api(path, { method: "POST", body: JSON.stringify(transform(raw, form)) });
+      if (id === "sourceForm" && result.token) {
+        $("newToken").textContent = "Copy this source token now; it will not be shown again:\n" + result.token;
+        $("newToken").className = "notice ok";
+      }
+      form.reset();
+      if (id === "destinationForm") updateDestinationFields();
+      if (id === "subscriptionForm") updateTargetOptions();
+      try {
+        await load();
+        msg(success + (result.token ? " (source token displayed separately)" : ""));
+      } catch (refreshError) {
+        msg(success + " The operation was saved, but refreshing the dashboard failed: " + refreshError.message, "error");
+      }
+    } catch (e) { msg(e.message, "error"); }
   }, {once:false});
 }
-
-window.ngwLogin = async function(event) {
-  if (event) {
-    event.preventDefault();
-    if (typeof event.stopPropagation === "function") event.stopPropagation();
-  }
-  const usernameEl = $("loginUsername");
-  const passwordEl = $("loginPassword");
-  const button = $("loginBtn");
-  const username = usernameEl.value.trim();
-  const password = passwordEl.value;
-
-  if (!username || !password) {
-    msg("Enter both username and password.", "error", "loginMsg");
-    return false;
-  }
-
-  button.disabled = true;
-  button.textContent = "Signing in…";
-  msg("Checking credentials…", "ok", "loginMsg");
-
-  try {
-    const response = await fetch("/v1/auth/login", {
-      method: "POST",
-      headers: {"Content-Type":"application/json", "Accept":"application/json"},
-      cache: "no-store",
-      body: JSON.stringify({username, password})
-    });
-    const result = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new Error((result && result.error) || ("Login failed (HTTP " + response.status + ")."));
-    }
-    if (!result || !result.token) throw new Error("The Worker did not return a session token.");
-
-    key = result.token;
-    saveKey(key);
-    passwordEl.value = "";
-    showApp();
-    showTab("overview");
-
-    try {
-      await load();
-      hideMsg("loginMsg");
-      msg("Signed in as " + (result.username || username) + ".");
-    } catch (loadError) {
-      msg("Login succeeded, but data failed to load: " + (loadError.message || "unknown error"), "error");
-    }
-  } catch (error) {
-    key = "";
-    clearSavedKey();
-    showLogin();
-    msg(error && error.message ? error.message : "Login request failed.", "error", "loginMsg");
-  } finally {
-    button.disabled = false;
-    button.textContent = "Sign in";
-  }
-  return false;
-};
-
+// Login is handled by the isolated bootstrap script above. Keep dashboard
+// initialization independent so authentication errors cannot be swallowed by a page reload.
 $("logoutBtn").addEventListener("click",async()=>{try{if(key)await fetch("/v1/auth/logout",{method:"POST",headers:{Authorization:"Bearer "+key},cache:"no-store"});}catch(_){}clearSavedKey();key="";$("loginPassword").value="";showLogin()});
 $("refreshBtn").addEventListener("click",()=>load().then(()=>msg("Data refreshed")).catch(e=>msg(e.message,"error")));
 document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>showTab(b.dataset.tab)));
-$("destType").addEventListener("change",()=>{
-  const type=$("destType").value;
-  $("emailFields").classList.toggle("hidden",type!=="email");
-  $("telegramFields").classList.toggle("hidden",type!=="telegram");
-  $("ntfyFields").classList.toggle("hidden",type!=="ntfy");
-});
+function updateDestinationFields() {
+  const type = $("destType").value;
+  $("emailFields").classList.toggle("hidden", type !== "email");
+  $("telegramFields").classList.toggle("hidden", type !== "telegram");
+  $("ntfyFields").classList.toggle("hidden", type !== "ntfy");
+  const form = $("destinationForm");
+  const groups = {
+    email: ["to", "sender_id", "api_key"],
+    telegram: ["bot_token", "chat_id"],
+    ntfy: ["base_url", "topic"]
+  };
+  for (const groupType of Object.keys(groups)) {
+    for (const name of groups[groupType]) {
+      const field = form.elements.namedItem(name);
+      if (!field) continue;
+      const active = type === groupType;
+      field.disabled = !active;
+      field.required = active;
+    }
+  }
+  const ntfyToken = form.elements.namedItem("token");
+  if (ntfyToken) ntfyToken.disabled = type !== "ntfy";
+}
+$("destType").addEventListener("change", updateDestinationFields);
+updateDestinationFields();
 $("targetType").addEventListener("change",updateTargetOptions);
 submitForm("topicForm","/v1/admin/topics",o=>o,"Topic created.");
 submitForm("sourceForm","/v1/admin/sources",(o,form)=>({name:o.name,allowed_topics:selectedValues(form.elements.allowed_topics)}),"Source created.");
@@ -230,21 +341,37 @@ submitForm("subscriptionForm","/v1/admin/subscriptions",o=>({
 }),"Subscription created.");
 document.addEventListener("click",async e=>{
   const b=e.target.closest("button[data-action]"); if(!b)return;
+  const action = b.dataset.action;
   const map={"disable-topic":"topics","disable-source":"sources","disable-destination":"destinations","disable-group":"groups","disable-subscription":"subscriptions"};
-  const entity=map[b.dataset.action];if(!entity)return;
+  if (action === "disable-member") {
+    const groupId = Number(b.dataset.groupId);
+    const destinationId = Number(b.dataset.destinationId);
+    if (!Number.isInteger(groupId) || !Number.isInteger(destinationId)) { msg("Cannot disable membership: missing group or destination ID.", "error"); return; }
+    if (!confirm("Disable this group membership? This does not delete history.")) return;
+    try { await api("/v1/admin/group-members/"+groupId+"/"+destinationId+"/disable", {method:"POST"}); await load(); msg("Group membership disabled."); }
+    catch (err) { msg(err.message, "error"); }
+    return;
+  }
+  const entity=map[action];if(!entity)return;
   if(!confirm("Disable this "+entity.slice(0,-1)+"? This does not delete history."))return;
   try{await api("/v1/admin/"+entity+"/"+b.dataset.id+"/disable",{method:"POST"});await load();msg("Record disabled.");}
   catch(err){msg(err.message,"error");}
 });
-
-// Auto-login from existing session storage
 if (key) {
   showApp();
-  load().catch(e => {
-    clearSavedKey();
-    key = "";
-    showLogin();
-    msg("Your session expired. Please sign in again.", "error", "loginMsg");
+  load().then(() => {
+    hideMsg();
+  }).catch((e) => {
+    const errorText = e && e.message ? e.message : "Unknown dashboard error";
+    // Only discard a session on an explicit authentication failure. D1 schema,
+    // query, provider, and other background errors must not force the user out.
+    if (/\b401\b|Unauthorized/i.test(errorText)) {
+      clearSavedKey(); key = ""; showLogin();
+      msg("Your login session is invalid or expired. Please sign in again.\n" + errorText, "error", "loginMsg");
+    } else {
+      showApp();
+      msg("Signed in, but one or more dashboard requests failed. Your session was kept.\n" + errorText, "error");
+    }
   });
 }
 })();
@@ -274,6 +401,8 @@ function fail(message, status = 400, details = undefined) {
 }
 
 function corsHeaders(request, env) {
+  // API-only by default. Set CORS_ORIGIN to one exact origin if a trusted
+  // browser-based admin UI is added later. Never use "*" with credentials.
   const origin = request.headers.get("Origin");
   const allowed = env.CORS_ORIGIN;
   if (origin && allowed && origin === allowed) {
@@ -334,143 +463,99 @@ async function requireAdmin(request, env) {
   const supplied = bearer(request);
   if (!supplied || supplied.length > 200) return false;
   const tokenHash = await sha256Hex(supplied);
-  try {
-    // Check with both standard ISO datetime format and unix timestamp tolerance
-    const session = await env.DB.prepare(`
-      SELECT s.token_hash FROM admin_sessions s
-      JOIN admin_users u ON u.username = s.username
-      WHERE s.token_hash = ? 
-        AND (s.expires_at > datetime('now') OR s.expires_at > datetime('now', 'localtime'))
-        AND (u.enabled = 1 OR u.enabled = '1')
-      LIMIT 1
-    `).bind(tokenHash).first();
-    return !!session;
-  } catch (err) {
-    console.error("requireAdmin error:", err);
-    return false;
-  }
+  const session = await env.DB.prepare(`
+    SELECT s.token_hash FROM admin_sessions s
+    JOIN admin_users u ON u.username = s.username
+    WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.enabled = 1
+    LIMIT 1
+  `).bind(tokenHash).first();
+  return !!session;
 }
 
 const ADMIN_PASSWORD_ITERATIONS = 210000;
-
 function base64ToBytes(value) {
-  let base64 = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
-  while (base64.length % 4) base64 += "=";
-  const raw = atob(base64);
-  const bytes = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) {
-    bytes[i] = raw.charCodeAt(i);
-  }
-  return bytes;
+  const raw = atob(value);
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
 }
-
-function parseBinary(value) {
-  if (!value || typeof value !== "string") return new Uint8Array(0);
-  const trimmed = value.trim();
-  // Support hex encoded hashes/salts
-  if (/^[0-9a-fA-F]{32,}$/.test(trimmed) && trimmed.length % 2 === 0) {
-    const bytes = new Uint8Array(trimmed.length / 2);
-    for (let i = 0; i < trimmed.length; i += 2) {
-      bytes[i / 2] = parseInt(trimmed.substring(i, i + 2), 16);
-    }
-    return bytes;
-  }
-  return base64ToBytes(trimmed);
-}
-
-async function verifyAdminPassword(password, saltString, expectedString, iterations) {
-  const salt = parseBinary(saltString);
-  const expected = parseBinary(expectedString);
-  const iter = Number(iterations) || ADMIN_PASSWORD_ITERATIONS;
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(password),
-    "PBKDF2",
-    false,
-    ["deriveBits"]
-  );
-
-  const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt, iterations: iter },
-    key,
-    256
-  );
-
-  const actual = new Uint8Array(bits);
+async function verifyAdminPassword(password, saltBase64, expectedBase64, iterations) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({name:'PBKDF2', hash:'SHA-256', salt:base64ToBytes(saltBase64), iterations:Number(iterations)||ADMIN_PASSWORD_ITERATIONS}, key, 256);
+  const actual = new Uint8Array(bits), expected = base64ToBytes(expectedBase64);
   if (actual.length !== expected.length) return false;
-  let diff = 0;
-  for (let i = 0; i < actual.length; i++) diff |= actual[i] ^ expected[i];
+  let diff = 0; for (let i=0;i<actual.length;i++) diff |= actual[i] ^ expected[i];
   return diff === 0;
+}
+async function handleAuthStatus(env) {
+  if (!env || !env.DB) return fail("The deployed Worker has no D1 binding named DB. Check wrangler.jsonc and the Cloudflare Worker bindings.", 503, { code: "DB_BINDING_MISSING" });
+  try {
+    await env.DB.prepare("SELECT 1 AS ready FROM admin_users LIMIT 1").first();
+    await env.DB.prepare("SELECT 1 AS ready FROM admin_sessions LIMIT 1").first();
+    return json({ ok: true, database: "connected", tables_ready: true });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const missing = /no such table|does not exist/i.test(detail);
+    return fail(
+      missing
+        ? "The D1 database bound to this Worker is missing admin_users or admin_sessions. Apply migrations 0001 and 0002 to this exact database, then redeploy."
+        : "The Worker cannot query the D1 login tables. Verify the DB binding and inspect Cloudflare Worker logs.",
+      503,
+      { code: missing ? "AUTH_TABLES_MISSING" : "D1_QUERY_FAILED" }
+    );
+  }
 }
 
 async function handleAdminLogin(request, env) {
+  if (!env || !env.DB) return fail("The deployed Worker has no D1 binding named DB. Check the Worker D1 binding configuration.", 503, { code: "DB_BINDING_MISSING" });
   let body;
-  try {
-    body = await readJson(request);
-  } catch (error) {
-    return fail(error.message, 400);
-  }
-
+  try { body = await readJson(request); }
+  catch (error) { return fail(error.message, 400); }
   const username = typeof body.username === "string" ? body.username.trim() : "";
   const password = typeof body.password === "string" ? body.password : "";
-
-  if (!username || password.length < 1 || password.length > 256) {
-    return fail("Enter a valid username and password.", 400);
-  }
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(username) || password.length < 1 || password.length > 256) return fail("Enter a valid username and password.", 400);
 
   let user;
   try {
-    user = await env.DB.prepare(
-      "SELECT username, salt, password_hash, iterations, enabled FROM admin_users WHERE username = ? LIMIT 1"
-    ).bind(username).first();
-  } catch (dbErr) {
-    console.error("D1 admin_users lookup failed:", dbErr);
-    return fail("Database error: Could not query admin_users.", 500);
+    user = await env.DB.prepare("SELECT username, salt, password_hash, iterations, enabled FROM admin_users WHERE username = ? LIMIT 1").bind(username).first();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("admin_login_user_query_failed", { message: detail });
+    const missing = /no such table|does not exist/i.test(detail);
+    return fail(missing
+      ? "Admin login tables are missing in the D1 database used by this Worker. Apply migrations 0001 and 0002 to the same database and redeploy."
+      : "The Worker could not read admin_users from D1. Check the DB binding and Cloudflare Worker logs.", 503,
+      { code: missing ? "AUTH_TABLES_MISSING" : "D1_USER_QUERY_FAILED" });
   }
 
   let valid = false;
   try {
-    if (user && (user.enabled === 1 || user.enabled === "1" || user.enabled === true)) {
-      valid = await verifyAdminPassword(password, user.salt, user.password_hash, user.iterations);
-    } else {
-      // Dummy check to prevent timing analysis
-      await verifyAdminPassword(
-        password,
-        "MDEyMzQ1Njc4OWFiY2RlZg==",
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        ADMIN_PASSWORD_ITERATIONS
-      );
-    }
+    if (user && Number(user.enabled) === 1) valid = await verifyAdminPassword(password, user.salt, user.password_hash, user.iterations);
+    else await verifyAdminPassword(password, "MDEyMzQ1Njc4OWFiY2RlZg==", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", ADMIN_PASSWORD_ITERATIONS);
   } catch (error) {
     console.error("admin_password_verify_failed", { message: error instanceof Error ? error.message : "unknown" });
-    return fail("Authentication service configuration error.", 500);
+    return fail("The stored password hash is invalid or the password-verification service failed. Reset this admin account using the account-creation script.", 500, { code: "PASSWORD_HASH_INVALID" });
   }
-
-  if (!valid) return fail("Invalid username or password.", 401);
+  if (!valid) return fail("Invalid username or password. Check spelling and confirm this account is enabled in the same D1 database used by the deployed Worker.", 401, { code: "INVALID_CREDENTIALS" });
 
   const token = randomToken("ngw_session");
   const tokenHash = await sha256Hex(token);
-
   try {
     await env.DB.prepare("DELETE FROM admin_sessions WHERE expires_at <= datetime('now')").run();
-    await env.DB.prepare(
-      "INSERT INTO admin_sessions (token_hash, username, expires_at) VALUES (?, ?, datetime('now', '+8 hours'))"
-    ).bind(tokenHash, user.username).run();
-  } catch (sessErr) {
-    console.error("D1 session write failed:", sessErr);
-    return fail("Could not create admin session.", 500);
+    await env.DB.prepare("INSERT INTO admin_sessions (token_hash, username, expires_at) VALUES (?, ?, datetime('now', '+8 hours'))").bind(tokenHash, user.username).run();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("admin_login_session_insert_failed", { message: detail });
+    const missing = /no such table|does not exist/i.test(detail);
+    return fail(missing
+      ? "Password is correct, but admin_sessions is missing. Apply migration 0002 to the D1 database used by this Worker."
+      : "Password accepted, but the session could not be saved in D1. Check admin_sessions schema, database permissions, and Worker logs.", 503,
+      { code: missing ? "AUTH_SESSIONS_TABLE_MISSING" : "SESSION_CREATE_FAILED" });
   }
-
   return json({ ok: true, token, username: user.username, expires_in: 28800 });
 }
-
 async function handleAdminLogout(request, env) {
   const supplied = bearer(request);
-  if (supplied) {
-    await env.DB.prepare("DELETE FROM admin_sessions WHERE token_hash = ?").bind(await sha256Hex(supplied)).run();
-  }
-  return json({ ok: true, logged_out: true });
+  if (supplied) await env.DB.prepare('DELETE FROM admin_sessions WHERE token_hash = ?').bind(await sha256Hex(supplied)).run();
+  return json({ok:true, logged_out:true});
 }
 
 async function requireSource(request, env) {
@@ -519,6 +604,7 @@ async function logDelivery(env, eventId, destinationId, status, httpStatus, resp
 
 async function sendEmail(destination, env, message) {
   const cfg = JSON.parse(destination.config_json);
+  // Each email destination has its own API key, encrypted at rest in D1.
   const apiKey = await decryptSecret(destination.secret_ciphertext, env);
   if (!apiKey) throw new Error("Email API key is not configured for this destination");
   if (!cfg.sender_id) throw new Error("Sender ID is not configured for this destination");
@@ -569,6 +655,7 @@ async function sendNtfy(destination, env, message) {
   const cfg = JSON.parse(destination.config_json);
   const base = String(cfg.base_url || "https://ntfy.sh").replace(/\/+$/, "");
   const topic = String(cfg.topic || "");
+  // Only allow an origin-like base URL; no embedded credentials.
   const parsed = new URL(base);
   if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password) {
     throw new Error("Invalid ntfy base_url");
@@ -735,6 +822,8 @@ async function handleNotify(request, env) {
     return json({ ok: true, event_id: eventId, matched_destinations: 0, deliveries: [], message: "Event recorded; no active subscriptions matched." });
   }
 
+  // Synchronous delivery: the request waits for every matching provider call.
+  // Each provider has a 10-second timeout. Delivery failures are returned per destination.
   const deliveries = await Promise.all(destinations.map((destination) => deliverToDestination(destination, env, event)));
   const failed = deliveries.filter((item) => item.status === "failed").length;
   return json({
@@ -894,13 +983,24 @@ async function adminRoute(request, env, url) {
     } catch { return fail("Could not create subscription; verify referenced IDs and duplicate rules", 409); }
   }
 
-  const disableMatch = path.match(/^\/v1\/admin\/(sources|destinations|topics|groups|subscriptions|group-members)\/(\d+)\/disable$/);
+  // Group membership uses a composite key (group_id, destination_id), not an id column.
+  const memberDisableMatch = path.match(/^\/v1\/admin\/group-members\/(\d+)\/(\d+)\/disable$/);
+  if (method === "POST" && memberDisableMatch) {
+    const groupId = Number(memberDisableMatch[1]);
+    const destinationId = Number(memberDisableMatch[2]);
+    const result = await env.DB.prepare("UPDATE group_members SET enabled = 0 WHERE group_id = ? AND destination_id = ?").bind(groupId, destinationId).run();
+    if (!result.meta.changes) return fail("Group membership not found", 404);
+    return json({ ok: true, disabled: true });
+  }
+
+  // Deactivation endpoints preserve audit history.
+  const disableMatch = path.match(/^\/v1\/admin\/(sources|destinations|topics|groups|subscriptions)\/(\d+)\/disable$/);
   if (method === "POST" && disableMatch) {
     const [, entity, rawId] = disableMatch;
     const id = Number(rawId);
     const table = {
       sources: "sources", destinations: "destinations", topics: "topics",
-      groups: "recipient_groups", subscriptions: "subscriptions", "group-members": "group_members"
+      groups: "recipient_groups", subscriptions: "subscriptions"
     }[entity];
     const result = await env.DB.prepare(`UPDATE ${table} SET enabled = 0 WHERE id = ?`).bind(id).run();
     if (!result.meta.changes) return fail("Record not found", 404);
@@ -956,6 +1056,8 @@ export default {
         response = json({ ok: true, service: "universal-notification-gateway" });
       } else if (url.pathname === "/v1/notify" && request.method === "POST") {
         response = await handleNotify(request, env);
+      } else if (url.pathname === "/v1/auth/status" && request.method === "GET") {
+        response = await handleAuthStatus(env);
       } else if (url.pathname === "/v1/auth/login" && request.method === "POST") {
         response = await handleAdminLogin(request, env);
       } else if (url.pathname === "/v1/auth/logout" && request.method === "POST") {
@@ -967,8 +1069,9 @@ export default {
         response = fail("Not found", 404);
       }
     } catch (error) {
-      console.error("gateway_error", { path: url.pathname, message: error instanceof Error ? error.message : "unknown" });
-      response = fail("Internal server error", 500);
+      // Do not return stack traces, environment values, or provider credentials.
+      console.error("gateway_error", { path: url.pathname, method: request.method, message: error instanceof Error ? error.message : "unknown" });
+      response = fail("Internal server error while handling " + url.pathname + ". Check Cloudflare Worker logs for the gateway_error entry.", 500);
     }
     return withCors(response, cors);
   }
