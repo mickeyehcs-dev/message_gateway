@@ -22,31 +22,70 @@ export async function getAdminOverview(db) {
     queryFirst(db, "SELECT COUNT(*) as count FROM delivery_logs WHERE status = 'failed'")
   ]);
 
-  const recentEvents = await queryAll(
-    db,
-    `
-    SELECT e.id, e.topic, e.title, e.severity, e.status, e.created_at, s.name as source_name
-    FROM events e
-    LEFT JOIN sources s ON s.id = e.source_id
-    ORDER BY e.id DESC
-    LIMIT 10
-    `
-  );
+  let recentEvents = [];
+  try {
+    recentEvents = await queryAll(
+      db,
+      `
+      SELECT e.id, e.topic, e.title, e.severity, e.status, e.created_at, s.name as source_name
+      FROM events e
+      LEFT JOIN sources s ON s.id = e.source_id
+      ORDER BY e.id DESC
+      LIMIT 10
+      `
+    );
+  } catch (err) {
+    try {
+      recentEvents = await queryAll(
+        db,
+        `
+        SELECT e.id, e.topic, e.severity, e.created_at, s.name as source_name
+        FROM events e
+        LEFT JOIN sources s ON s.id = e.source_id
+        ORDER BY e.id DESC
+        LIMIT 10
+        `
+      );
+    } catch (err2) {
+      recentEvents = [];
+    }
+  }
 
-  const failureSummaries = await queryAll(
-    db,
-    `
-    SELECT dl.destination_id, d.name AS destination_name, d.type AS provider_type,
-           COUNT(*) as failure_count, MAX(dl.created_at) as last_failure_at,
-           dl.error_message
-    FROM delivery_logs dl
-    JOIN destinations d ON d.id = dl.destination_id
-    WHERE dl.status = 'failed'
-    GROUP BY dl.destination_id
-    ORDER BY failure_count DESC
-    LIMIT 5
-    `
-  );
+  let failureSummaries = [];
+  try {
+    failureSummaries = await queryAll(
+      db,
+      `
+      SELECT dl.destination_id, d.name AS destination_name, d.type AS provider_type,
+             COUNT(*) as failure_count, MAX(dl.created_at) as last_failure_at,
+             dl.error_message
+      FROM delivery_logs dl
+      JOIN destinations d ON d.id = dl.destination_id
+      WHERE dl.status = 'failed'
+      GROUP BY dl.destination_id
+      ORDER BY failure_count DESC
+      LIMIT 5
+      `
+    );
+  } catch (err) {
+    try {
+      failureSummaries = await queryAll(
+        db,
+        `
+        SELECT dl.destination_id, d.name AS destination_name, d.type AS provider_type,
+               COUNT(*) as failure_count, MAX(dl.created_at) as last_failure_at
+        FROM delivery_logs dl
+        JOIN destinations d ON d.id = dl.destination_id
+        WHERE dl.status = 'failed'
+        GROUP BY dl.destination_id
+        ORDER BY failure_count DESC
+        LIMIT 5
+        `
+      );
+    } catch (err2) {
+      failureSummaries = [];
+    }
+  }
 
   return {
     metrics: {
@@ -66,15 +105,32 @@ export async function getAdminOverview(db) {
  * Sources Management
  */
 export async function listSources(db) {
-  const sources = await queryAll(
-    db,
-    `
-    SELECT s.id, s.name, s.enabled, s.rate_limit_per_minute, s.created_at, s.last_used_at,
-           (SELECT COUNT(*) FROM events WHERE source_id = s.id) as events_count
-    FROM sources s
-    ORDER BY s.id DESC
-    `
-  );
+  let sources = [];
+  try {
+    sources = await queryAll(
+      db,
+      `
+      SELECT s.id, s.name, s.enabled, s.rate_limit_per_minute, s.created_at, s.last_used_at,
+             (SELECT COUNT(*) FROM events WHERE source_id = s.id) as events_count
+      FROM sources s
+      ORDER BY s.id DESC
+      `
+    );
+  } catch (err) {
+    try {
+      sources = await queryAll(
+        db,
+        `
+        SELECT s.id, s.name, s.enabled, s.created_at,
+               (SELECT COUNT(*) FROM events WHERE source_id = s.id) as events_count
+        FROM sources s
+        ORDER BY s.id DESC
+        `
+      );
+    } catch (err2) {
+      sources = [];
+    }
+  }
 
   // Fetch allowed topics for each source
   const sourceTopics = await queryAll(db, "SELECT source_id, topic_name FROM source_topics");
@@ -797,10 +853,23 @@ export async function listDeliveryLogs(db, { limit = 50, offset = 0, status, des
  * System Settings & Readiness Diagnostic
  */
 export async function getSystemSettings(db, env) {
-  const [adminCount, activeSessions] = await Promise.all([
-    queryFirst(db, "SELECT COUNT(*) as count FROM admin_users WHERE enabled = 1"),
-    queryFirst(db, "SELECT COUNT(*) as count FROM admin_sessions WHERE expires_at > datetime('now') AND revoked_at IS NULL")
-  ]);
+  let adminCount = 0;
+  let activeSessions = 0;
+
+  try {
+    const res = await queryFirst(db, "SELECT COUNT(*) as count FROM admin_users WHERE enabled = 1");
+    adminCount = res?.count || 0;
+  } catch (e) {}
+
+  try {
+    const res = await queryFirst(db, "SELECT COUNT(*) as count FROM admin_sessions WHERE expires_at > datetime('now') AND revoked_at IS NULL");
+    activeSessions = res?.count || 0;
+  } catch (e) {
+    try {
+      const res = await queryFirst(db, "SELECT COUNT(*) as count FROM admin_sessions WHERE expires_at > datetime('now')");
+      activeSessions = res?.count || 0;
+    } catch (e2) {}
+  }
 
   return {
     runtime: "Cloudflare Workers",

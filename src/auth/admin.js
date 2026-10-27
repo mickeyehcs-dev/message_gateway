@@ -121,12 +121,17 @@ export async function loginAdmin(db, username, password, clientIp = "unknown") {
       [tokenHash, normalizedUser, expiresAt, createdAt]
     );
 
-    // Update last login timestamp
-    await execute(
-      db,
-      "UPDATE admin_users SET last_login_at = ? WHERE username = ?",
-      [createdAt, normalizedUser]
-    );
+    // Update last login timestamp (safe if column does not exist yet)
+    try {
+      await execute(
+        db,
+        "UPDATE admin_users SET last_login_at = ? WHERE username = ?",
+        [createdAt, normalizedUser]
+      );
+    } catch (e) {}
+
+    // Ensure background migration runs if needed
+    autoMigrate(db).catch(() => {});
 
     return {
       success: true,
@@ -149,6 +154,41 @@ export async function loginAdmin(db, username, password, clientIp = "unknown") {
   }
 }
 
+let schemaMigrated = false;
+
+/**
+ * Automatically applies non-breaking schema additions (idempotent ALTER TABLEs)
+ * Ensures tables created under older migrations gain any newly required columns.
+ * @param {D1Database} db
+ */
+export async function autoMigrate(db) {
+  if (schemaMigrated || !db) return;
+  schemaMigrated = true;
+
+  const alterStatements = [
+    "ALTER TABLE admin_sessions ADD COLUMN revoked_at TEXT",
+    "ALTER TABLE admin_users ADD COLUMN updated_at TEXT",
+    "ALTER TABLE admin_users ADD COLUMN last_login_at TEXT",
+    "ALTER TABLE sources ADD COLUMN last_used_at TEXT",
+    "ALTER TABLE sources ADD COLUMN rate_limit_per_minute INTEGER DEFAULT 60",
+    "ALTER TABLE destinations ADD COLUMN updated_at TEXT",
+    "ALTER TABLE events ADD COLUMN title TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE events ADD COLUMN status TEXT NOT NULL DEFAULT 'processed'",
+    "ALTER TABLE events ADD COLUMN payload_hash TEXT",
+    "ALTER TABLE delivery_logs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE delivery_logs ADD COLUMN completed_at TEXT",
+    "ALTER TABLE delivery_logs ADD COLUMN error_message TEXT NOT NULL DEFAULT ''"
+  ];
+
+  for (const sql of alterStatements) {
+    try {
+      await db.prepare(sql).run();
+    } catch (e) {
+      // Ignored: column already exists or table does not exist yet
+    }
+  }
+}
+
 /**
  * Authenticates an administrator from an Authorization header
  * @param {D1Database} db 
@@ -165,20 +205,38 @@ export async function authenticateAdmin(db, authHeader) {
     return { authenticated: false, error: "Missing session token", status: 401 };
   }
 
+  // Ensure background migration runs if needed
+  autoMigrate(db).catch(() => {});
+
   try {
     const tokenHash = await sha256(rawToken);
 
     // Session must not be expired, not revoked, and the admin must be enabled
-    const session = await queryFirst(
-      db,
-      `
-      SELECT s.token_hash, s.username, s.expires_at, s.revoked_at, u.enabled
-      FROM admin_sessions s
-      JOIN admin_users u ON u.username = s.username
-      WHERE s.token_hash = ?
-      `,
-      [tokenHash]
-    );
+    let session;
+    try {
+      session = await queryFirst(
+        db,
+        `
+        SELECT s.token_hash, s.username, s.expires_at, s.revoked_at, u.enabled
+        FROM admin_sessions s
+        JOIN admin_users u ON u.username = s.username
+        WHERE s.token_hash = ?
+        `,
+        [tokenHash]
+      );
+    } catch (queryErr) {
+      // Fallback query if s.revoked_at column does not exist in D1 yet
+      session = await queryFirst(
+        db,
+        `
+        SELECT s.token_hash, s.username, s.expires_at, u.enabled
+        FROM admin_sessions s
+        JOIN admin_users u ON u.username = s.username
+        WHERE s.token_hash = ?
+        `,
+        [tokenHash]
+      );
+    }
 
     if (!session) {
       return { authenticated: false, error: "Invalid or expired session", status: 401 };
@@ -203,8 +261,9 @@ export async function authenticateAdmin(db, authHeader) {
       status: 200
     };
   } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
     console.error("authenticate_admin_error", error);
-    return { authenticated: false, error: "Authentication check failed", status: 500 };
+    return { authenticated: false, error: "Authentication check failed: " + errorMsg, status: 500 };
   }
 }
 
@@ -219,11 +278,19 @@ export async function logoutAdmin(db, rawToken) {
   try {
     const tokenHash = await sha256(rawToken);
     const now = new Date().toISOString();
-    await execute(
-      db,
-      "UPDATE admin_sessions SET revoked_at = ? WHERE token_hash = ?",
-      [now, tokenHash]
-    );
+    try {
+      await execute(
+        db,
+        "UPDATE admin_sessions SET revoked_at = ? WHERE token_hash = ?",
+        [now, tokenHash]
+      );
+    } catch (e) {
+      await execute(
+        db,
+        "DELETE FROM admin_sessions WHERE token_hash = ?",
+        [tokenHash]
+      );
+    }
     return true;
   } catch (error) {
     console.error("logout_admin_error", error);
@@ -244,6 +311,14 @@ export async function cleanupExpiredSessions(db) {
       [now]
     );
   } catch (error) {
-    console.error("cleanup_sessions_error", error);
+    try {
+      await execute(
+        db,
+        "DELETE FROM admin_sessions WHERE expires_at <= ?",
+        [now]
+      );
+    } catch (e) {
+      console.error("cleanup_sessions_error", e);
+    }
   }
 }
