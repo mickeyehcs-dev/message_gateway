@@ -7,8 +7,11 @@ import { loginAdmin, authenticateAdmin, logoutAdmin, cleanupExpiredSessions } fr
 import { authenticateSource } from "./auth/source.js";
 import { processNotification } from "./services/routing.js";
 import * as adminService from "./services/admin.js";
+import * as webpushService from "./services/webpush.js";
 import { renderDashboardHtml } from "./ui/dashboard.js";
-import { queryFirst } from "./db/index.js";
+import { renderServiceWorkerJs } from "./ui/service-worker.js";
+import { getOrGenerateVapidKeys, generateVapidKeys } from "./security/vapid.js";
+import { queryFirst, execute } from "./db/index.js";
 
 /**
  * Standard JSON response helper
@@ -101,7 +104,20 @@ export async function handleRequest(request, env) {
       return applySecurityHeaders(response, securityHeaders);
     }
 
-    // 2. Health Check
+    // 2. Browser Service Worker for Web Push
+    if (path === "/sw.js" && method === "GET") {
+      response = new Response(renderServiceWorkerJs(), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Service-Worker-Allowed": "/",
+          "Cache-Control": "no-cache, no-store, must-revalidate"
+        }
+      });
+      return applySecurityHeaders(response, securityHeaders);
+    }
+
+    // 3. Health Check
     if (path === "/health" && method === "GET") {
       response = json({
         ok: true,
@@ -180,6 +196,71 @@ export async function handleRequest(request, env) {
       return applySecurityHeaders(response, securityHeaders);
     }
 
+    // 6. Public Web Push Notification Routes (No login required - for device subscription)
+    if (path === "/v1/webpush/vapid-public-key" && method === "GET") {
+      const vapid = await getOrGenerateVapidKeys(env.DB, env);
+      response = json({ ok: true, publicKey: vapid.publicKey });
+      return applySecurityHeaders(response, securityHeaders);
+    }
+
+    if (path === "/v1/webpush/topics" && method === "GET") {
+      const topics = await webpushService.getAvailableTopics(env.DB);
+      response = json({ ok: true, topics });
+      return applySecurityHeaders(response, securityHeaders);
+    }
+
+    if (path === "/v1/webpush/subscribe" && method === "POST") {
+      const { data, error } = await readJsonSafe(request);
+      if (error) return applySecurityHeaders(fail(error), securityHeaders);
+
+      try {
+        const result = await webpushService.subscribeClient(env.DB, data || {});
+        response = json({ ok: true, ...result });
+      } catch (err) {
+        response = fail(err.message, 400);
+      }
+      return applySecurityHeaders(response, securityHeaders);
+    }
+
+    if (path === "/v1/webpush/unsubscribe" && method === "POST") {
+      const { data, error } = await readJsonSafe(request);
+      if (error) return applySecurityHeaders(fail(error), securityHeaders);
+
+      try {
+        const result = await webpushService.unsubscribeClient(env.DB, data || {});
+        response = json({ ok: true, ...result });
+      } catch (err) {
+        response = fail(err.message, 400);
+      }
+      return applySecurityHeaders(response, securityHeaders);
+    }
+
+    if (path === "/v1/webpush/status" && method === "POST") {
+      const { data, error } = await readJsonSafe(request);
+      if (error) return applySecurityHeaders(fail(error), securityHeaders);
+
+      try {
+        const result = await webpushService.getSubscriptionStatus(env.DB, data?.endpoint, data?.topic);
+        response = json({ ok: true, ...result });
+      } catch (err) {
+        response = fail(err.message, 400);
+      }
+      return applySecurityHeaders(response, securityHeaders);
+    }
+
+    if (path === "/v1/webpush/test" && method === "POST") {
+      const { data, error } = await readJsonSafe(request);
+      if (error) return applySecurityHeaders(fail(error), securityHeaders);
+
+      try {
+        const result = await webpushService.sendTestPush(env.DB, data || {}, env);
+        response = json({ ok: result.success, ...result });
+      } catch (err) {
+        response = fail(err.message, 400);
+      }
+      return applySecurityHeaders(response, securityHeaders);
+    }
+
     // 6. Notification Ingestion API (Source Authentication)
     if (path === "/v1/notify" && method === "POST") {
       const authHeader = request.headers.get("Authorization");
@@ -235,6 +316,26 @@ async function handleAdminRoutes(path, method, request, env, url) {
   if (path === "/v1/admin/settings" && method === "GET") {
     const data = await adminService.getSystemSettings(env.DB, env);
     return json({ ok: true, data });
+  }
+
+  // Regenerate VAPID Keys
+  if (path === "/v1/admin/vapid/regenerate" && method === "POST") {
+    const generated = await generateVapidKeys();
+    const payload = {
+      publicKey: generated.publicKey,
+      privateKey: generated.privateKey,
+      subject: (env && env.VAPID_SUBJECT) ? env.VAPID_SUBJECT.trim() : "mailto:admin@notification-gateway.local"
+    };
+    await execute(
+      env.DB,
+      `
+      INSERT INTO system_settings (key, value, created_at, updated_at)
+      VALUES ('vapid_keys', ?, datetime('now'), datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+      `,
+      [JSON.stringify(payload)]
+    );
+    return json({ ok: true, publicKey: generated.publicKey, message: "VAPID keypair regenerated successfully" });
   }
 
   // Cleanup Sessions

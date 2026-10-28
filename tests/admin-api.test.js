@@ -156,15 +156,30 @@ describe("Administrative API Endpoints", () => {
   it("should perform CRUD and test call on destinations", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("OK", { status: 200 })));
 
+    const clientKeyPair = await crypto.subtle.generateKey(
+      { name: "ECDH", namedCurve: "P-256" },
+      true,
+      ["deriveBits"]
+    );
+    const rawClientPub = await crypto.subtle.exportKey("raw", clientKeyPair.publicKey);
+    const toB64Url = (buf) => Buffer.from(buf).toString("base64url");
+    const clientAuth = crypto.getRandomValues(new Uint8Array(16));
+
     // Create destination
     const createReq = new Request("http://localhost/v1/admin/destinations", {
       method: "POST",
       headers: { "Authorization": adminAuthHeader, "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: "test-ntfy-alerts",
-        type: "ntfy",
-        config: { base_url: "https://ntfy.sh", topic: "my-test-topic" },
-        secret: "optional-token"
+        name: "test-webpush-alerts",
+        type: "webpush",
+        config: {
+          endpoint: "https://fcm.googleapis.com/fcm/send/test-sub-123",
+          keys: {
+            p256dh: toB64Url(rawClientPub),
+            auth: toB64Url(clientAuth)
+          },
+          click_url: "/admin#events"
+        }
       })
     });
     const createRes = await handleRequest(createReq, env);

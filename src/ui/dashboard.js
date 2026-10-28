@@ -374,22 +374,110 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
   justify-content: flex-end;
   gap: 10px;
 }
-/* Login View */
-#login-container {
-  max-width: 420px;
-  margin: 12vh auto;
+/* Portal & Login View */
+.portal-wrapper {
+  max-width: 960px;
+  width: 100%;
+  margin: 30px auto;
+  padding: 0 16px;
+}
+.portal-header {
+  text-align: center;
+  margin-bottom: 28px;
+}
+.portal-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 22px;
+}
+@media (max-width: 820px) {
+  .portal-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.portal-card {
   background: var(--bg-panel);
   border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 26px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+.portal-card:hover {
+  border-color: rgba(249, 115, 22, 0.45);
+}
+.portal-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  gap: 12px;
+}
+.portal-card-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.portal-card-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  line-height: 1.45;
+}
+.topic-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.topic-pill:hover, .topic-pill.selected {
+  background: var(--accent-orange-dim);
+  border-color: var(--accent-orange);
+  color: #fdba74;
+}
+.pulse-indicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+  animation: pulseGreen 2s infinite;
+}
+@keyframes pulseGreen {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+.active-subs-box {
+  margin-top: 18px;
+  padding: 14px;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 28px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
 }
-.login-header {
-  text-align: center;
-  margin-bottom: 24px;
+.active-sub-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-top: 6px;
 }
-.login-title { font-size: 20px; font-weight: 700; color: var(--text-main); }
-.login-desc { font-size: 13px; color: var(--text-muted); margin-top: 6px; }
 .secret-display {
   background: #060b17;
   border: 1px solid var(--accent-orange);
@@ -422,28 +510,102 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
 </head>
 <body>
 
-<!-- Login View -->
-<div id="login-view" style="width: 100%; display: flex; align-items: center; justify-content: center;">
-  <div id="login-container">
-    <div class="login-header">
-      <div style="display:inline-block; margin-bottom:12px;">
-        <span class="logo-badge" style="font-size:12px; padding:4px 9px;">GATEWAY</span>
+<!-- Login & Web Push Subscription Portal -->
+<div id="login-view" style="width: 100%; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px;">
+  <div class="portal-wrapper">
+    <div class="portal-header">
+      <div style="display:inline-flex; align-items:center; gap:8px; margin-bottom:12px;">
+        <span class="logo-badge" style="font-size:12px; padding:4px 10px; border-radius:4px;">UNG GATEWAY</span>
+        <span style="font-size:12px; color:var(--text-muted); background:var(--bg-panel); padding:4px 10px; border-radius:4px; border:1px solid var(--border);">v1.0 &bull; Cloudflare D1</span>
       </div>
-      <h1 class="login-title">Administrator Sign In</h1>
-      <p class="login-desc">Universal Notification Gateway console access</p>
+      <h1 style="font-size: 26px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-main);">Universal Notification Gateway</h1>
+      <p style="font-size: 14px; color: var(--text-muted); margin-top: 6px;">Real-Time Multi-Channel Notification Router &amp; Browser Push Service</p>
     </div>
-    <div id="login-alert" class="alert alert-danger hidden"></div>
-    <form id="login-form">
-      <div class="form-group">
-        <label for="admin-user">Username</label>
-        <input type="text" id="admin-user" required autocomplete="username" placeholder="admin">
+
+    <div class="portal-grid">
+      <!-- Card 1: Web Push Subscription -->
+      <div class="portal-card" style="border-top: 3px solid var(--accent-orange);">
+        <div class="portal-card-header">
+          <div>
+            <div class="portal-card-title">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-orange)" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+              <span>Subscribe to Web Push Alerts</span>
+            </div>
+            <p class="portal-card-desc">Subscribe this browser or mobile device to real-time notification topics. No account required.</p>
+          </div>
+          <div id="push-capability-badge">
+            <span class="badge badge-neutral" style="display:flex; align-items:center; gap:5px;"><span class="pulse-indicator"></span> Checking...</span>
+          </div>
+        </div>
+
+        <div id="push-alert" class="alert alert-danger hidden" style="margin-bottom:16px;"></div>
+
+        <form id="push-subscribe-form" onsubmit="return false;">
+          <div class="form-group">
+            <label for="push-topic-input">Alert Topic</label>
+            <input type="text" id="push-topic-input" list="available-topics-list" required placeholder="e.g. system.alerts, devops, database">
+            <datalist id="available-topics-list"></datalist>
+            <div class="form-hint" style="margin-top:6px;">Select an active topic or click a suggested topic below:</div>
+            <div id="push-topic-pills" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">
+              <span style="font-size:12px; color:var(--text-dim);">Loading available topics...</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="push-device-label">Device Identifier <span style="font-weight:normal;color:var(--text-muted);">(Optional)</span></label>
+            <input type="text" id="push-device-label" placeholder="e.g. Work Laptop (Chrome)">
+          </div>
+
+          <div style="display:flex; gap:10px; margin-top:14px;">
+            <button type="button" id="push-subscribe-btn" class="btn-primary" style="flex:1; padding:11px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:8px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+              <span id="push-subscribe-btn-text">Subscribe to Topic Alerts</span>
+            </button>
+          </div>
+        </form>
+
+        <div id="active-subs-container" class="active-subs-box hidden">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted);">Active Device Subscriptions</span>
+            <button type="button" id="push-send-test-btn" class="btn-sm" style="font-size:11px; padding:3px 8px; border-color:var(--accent-orange); color:#fdba74;">Send Test Push</button>
+          </div>
+          <div id="active-subs-list" style="margin-top:8px;"></div>
+        </div>
       </div>
-      <div class="form-group">
-        <label for="admin-pass">Password</label>
-        <input type="password" id="admin-pass" required autocomplete="current-password" placeholder="••••••••••••">
+
+      <!-- Card 2: Administrator Sign In -->
+      <div class="portal-card" style="display:flex; flex-direction:column; justify-content:space-between;">
+        <div>
+          <div class="portal-card-header">
+            <div>
+              <div class="portal-card-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                <span>Console Sign In</span>
+              </div>
+              <p class="portal-card-desc">Sign in with administrator credentials to manage routing rules, sources, destinations, and audit logs.</p>
+            </div>
+          </div>
+
+          <div id="login-alert" class="alert alert-danger hidden" style="margin-bottom:16px;"></div>
+
+          <form id="login-form">
+            <div class="form-group">
+              <label for="admin-user">Administrator Username</label>
+              <input type="text" id="admin-user" required autocomplete="username" placeholder="admin">
+            </div>
+            <div class="form-group">
+              <label for="admin-pass">Password</label>
+              <input type="password" id="admin-pass" required autocomplete="current-password" placeholder="••••••••••••">
+            </div>
+            <button type="submit" id="login-submit-btn" class="btn-primary" style="width:100%; padding:11px; font-weight:600; margin-top:10px;">Sign In to Console</button>
+          </form>
+        </div>
+
+        <div style="border-top:1px solid var(--border); padding-top:14px; margin-top:20px; font-size:12px; color:var(--text-dim); text-align:center;">
+          Protected by Argon2id / PBKDF2 Session Tokens &bull; Cloudflare D1
+        </div>
       </div>
-      <button type="submit" id="login-submit-btn" class="btn-primary" style="width:100%; padding:10px; margin-top:8px;">Sign In to Console</button>
-    </form>
+    </div>
   </div>
 </div>
 
@@ -626,6 +788,42 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
                 <label for="topic-desc">Description</label>
                 <input type="text" id="topic-desc" placeholder="Operational alert notifications">
               </div>
+
+              <!-- Web Push Style & Notification Settings -->
+              <div style="background:var(--bg-panel-alt); border:1px solid var(--border); border-radius:8px; padding:14px; margin-bottom:16px;">
+                <div style="font-size:13px; font-weight:700; color:var(--text-main); margin-bottom:10px; display:flex; align-items:center; gap:6px;">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-orange)" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+                  <span>Web Push Notification Style & Behaviour</span>
+                </div>
+
+                <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+                  <input type="checkbox" id="topic-webpush-enabled" checked style="width:auto; margin:0;">
+                  <label for="topic-webpush-enabled" style="margin:0; cursor:pointer;">Allow Web Push subscriptions from login page</label>
+                </div>
+
+                <div class="form-group">
+                  <label for="topic-click-url">When Clicked, Open URL / Page <span style="color:var(--accent-orange);">*</span></label>
+                  <input type="text" id="topic-click-url" placeholder="/admin#events or https://..." value="/admin#events">
+                  <div class="form-hint">URL or path opened in browser when notification is clicked</div>
+                </div>
+
+                <div class="grid-2" style="gap:10px;">
+                  <div class="form-group">
+                    <label for="topic-icon">Notification Icon URL</label>
+                    <input type="url" id="topic-icon" placeholder="https://example.com/icon.png">
+                  </div>
+                  <div class="form-group">
+                    <label for="topic-badge">Status Bar Badge URL</label>
+                    <input type="url" id="topic-badge" placeholder="https://example.com/badge.png">
+                  </div>
+                </div>
+
+                <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-top:6px; margin-bottom:0;">
+                  <input type="checkbox" id="topic-require-interaction" style="width:auto; margin:0;">
+                  <label for="topic-require-interaction" style="margin:0; cursor:pointer;">Require Interaction (keep on screen until dismissed)</label>
+                </div>
+              </div>
+
               <button type="submit" class="btn-primary">Create Topic</button>
             </form>
           </div>
@@ -636,7 +834,7 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Topic</th><th>Description</th><th>Sources</th><th>Subscribers</th><th>Status</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Topic</th><th>Description</th><th>Sources</th><th>Subscribers</th><th>Web Push Style</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody id="topics-table-body"></tbody>
               </table>
             </div>
@@ -654,14 +852,14 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
             <form id="create-dest-form">
               <div class="form-group">
                 <label for="dest-name">Destination Name</label>
-                <input type="text" id="dest-name" required placeholder="e.g. ops-email, dev-telegram, sec-ntfy">
+                <input type="text" id="dest-name" required placeholder="e.g. ops-email, dev-telegram, browser-push">
               </div>
               <div class="form-group">
                 <label for="dest-type">Provider Type</label>
                 <select id="dest-type">
                   <option value="email">Email (HTTP Sender API)</option>
                   <option value="telegram">Telegram Bot</option>
-                  <option value="ntfy">ntfy Server / Topic</option>
+                  <option value="webpush">Web Push (Browser Push Service)</option>
                 </select>
               </div>
 
@@ -693,19 +891,28 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
                 </div>
               </div>
 
-              <!-- ntfy Fields -->
-              <div id="dest-ntfy-fields" class="hidden">
+              <!-- Web Push Fields -->
+              <div id="dest-webpush-fields" class="hidden">
                 <div class="form-group">
-                  <label for="dest-ntfy-url">ntfy Base URL</label>
-                  <input type="url" id="dest-ntfy-url" value="https://ntfy.sh">
+                  <label for="dest-webpush-endpoint">Push Subscription Endpoint URL</label>
+                  <input type="url" id="dest-webpush-endpoint" placeholder="https://fcm.googleapis.com/fcm/send/...">
+                  <div class="form-hint">Push service endpoint URL from browser pushManager.subscribe()</div>
                 </div>
                 <div class="form-group">
-                  <label for="dest-ntfy-topic">ntfy Topic</label>
-                  <input type="text" id="dest-ntfy-topic" placeholder="private-alert-topic">
+                  <label for="dest-webpush-p256dh">Client Public Key (p256dh)</label>
+                  <input type="text" id="dest-webpush-p256dh" placeholder="Base64url encoded client ECDH public key">
                 </div>
                 <div class="form-group">
-                  <label for="dest-ntfy-token">Access Token (Optional, Encrypted in D1)</label>
-                  <input type="password" id="dest-ntfy-token" placeholder="Optional bearer token">
+                  <label for="dest-webpush-auth">Client Auth Secret (auth)</label>
+                  <input type="password" id="dest-webpush-auth" placeholder="Base64url encoded client authentication secret">
+                </div>
+                <div class="form-group">
+                  <label for="dest-webpush-click-url">Custom Click URL Override <span style="font-weight:normal;color:var(--text-muted);">(Optional)</span></label>
+                  <input type="text" id="dest-webpush-click-url" placeholder="/admin#events or https://...">
+                </div>
+                <div class="form-group">
+                  <label for="dest-webpush-icon">Custom Notification Icon URL <span style="font-weight:normal;color:var(--text-muted);">(Optional)</span></label>
+                  <input type="url" id="dest-webpush-icon" placeholder="https://example.com/icon.png">
                 </div>
               </div>
 
@@ -913,7 +1120,8 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
             <p style="color:var(--text-muted); font-size:13px; line-height:1.6;">
               <strong>Synchronous Delivery:</strong> Deliveries run within the Cloudflare Worker execution budget (10s per provider).<br><br>
               <strong>Secret Encryption:</strong> Bot tokens and API credentials stored in D1 are secured with AES-256-GCM derived from <code>DESTINATION_ENCRYPTION_KEY</code>.<br><br>
-              <strong>SSRF Guardrails:</strong> ntfy destinations block private IP ranges (127.0.0.1, RFC1918, link-local metadata).
+              <strong>SSRF Guardrails:</strong> Web Push and external webhook destinations block private IP ranges (127.0.0.1, RFC1918, link-local metadata).<br><br>
+              <strong>Web Push VAPID:</strong> RFC 8292 application server keys securely sign all browser push dispatches via Web Crypto.
             </p>
           </div>
         </div>
@@ -953,6 +1161,84 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
     <div class="modal-footer">
       <button id="token-modal-close" class="btn">I Have Safely Stored This Key</button>
     </div>
+  </div>
+</div>
+
+<!-- Modal: Topic & Web Push Style Configuration -->
+<div id="topic-style-modal" class="modal-overlay hidden">
+  <div class="modal-card" style="max-width:620px;">
+    <div class="modal-header">
+      <div>
+        <h3 id="topic-style-modal-title" class="modal-title">Configure Notification Style &amp; Web Push</h3>
+        <p style="font-size:12px; color:var(--text-muted); margin-top:3px;">Topic: <span id="topic-style-modal-name" class="topic-tag"></span></p>
+      </div>
+      <button id="topic-style-modal-close" class="btn-sm">&times;</button>
+    </div>
+    <form id="topic-style-form">
+      <input type="hidden" id="edit-topic-id">
+      <div class="modal-body" style="max-height:65vh; overflow-y:auto; padding:18px 24px;">
+        <div class="form-group">
+          <label for="edit-topic-desc">Topic Description</label>
+          <input type="text" id="edit-topic-desc" placeholder="Operational alert notifications">
+        </div>
+
+        <div style="background:var(--bg-panel-alt); border:1px solid var(--border); border-radius:8px; padding:16px; margin-top:14px;">
+          <div style="font-size:14px; font-weight:700; color:var(--text-main); margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-orange)" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+            <span>Web Push Notification Style &amp; Behaviour</span>
+          </div>
+
+          <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+            <input type="checkbox" id="edit-topic-webpush-enabled" style="width:auto; margin:0;">
+            <label for="edit-topic-webpush-enabled" style="margin:0; cursor:pointer;">Allow visitors to subscribe to this topic from the login page</label>
+          </div>
+
+          <div class="form-group">
+            <label for="edit-topic-click-url">When Clicked, Open URL / Page <span style="color:var(--accent-orange); font-weight:bold;">*</span></label>
+            <input type="text" id="edit-topic-click-url" placeholder="/admin#events, /, or https://company.com/alerts" value="/admin#events">
+            <div class="form-hint">URL or path opened in browser when notification is clicked</div>
+          </div>
+
+          <div class="grid-2" style="gap:12px;">
+            <div class="form-group">
+              <label for="edit-topic-icon">Notification Icon URL</label>
+              <input type="url" id="edit-topic-icon" placeholder="https://example.com/icon.png">
+              <div class="form-hint">Image shown on alert card</div>
+            </div>
+            <div class="form-group">
+              <label for="edit-topic-badge">Status Bar Badge URL</label>
+              <input type="url" id="edit-topic-badge" placeholder="https://example.com/badge.png">
+              <div class="form-hint">Monochrome mobile icon</div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="edit-topic-image">Banner Image URL (Rich Push)</label>
+            <input type="url" id="edit-topic-image" placeholder="https://example.com/banner.png">
+          </div>
+
+          <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+            <input type="checkbox" id="edit-topic-require-interaction" style="width:auto; margin:0;">
+            <label for="edit-topic-require-interaction" style="margin:0; cursor:pointer;">Require Interaction (keep alert open on screen until user dismisses or clicks it)</label>
+          </div>
+
+          <div class="grid-2" style="gap:12px;">
+            <div class="form-group">
+              <label for="edit-topic-vibrate">Vibration Pattern</label>
+              <input type="text" id="edit-topic-vibrate" placeholder="200, 100, 200">
+            </div>
+            <div class="form-group">
+              <label for="edit-topic-tag">Notification Tag</label>
+              <input type="text" id="edit-topic-tag" placeholder="ung-alerts">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="topic-style-modal-cancel" class="btn">Cancel</button>
+        <button type="submit" class="btn-primary">Save Notification Style</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -1026,6 +1312,7 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
   function showAuthView() {
     loginView.classList.remove("hidden");
     appView.classList.add("hidden");
+    initWebPushLoginCard();
   }
 
   function showAppView() {
@@ -1111,6 +1398,260 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
     setToken(null);
     showAuthView();
   });
+
+  // --- Web Push Login Page Client Logic ---
+  function urlBase64ToUint8Array(base64String) {
+    const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+  }
+
+  function getStoredPushTopics() {
+    try {
+      return JSON.parse(localStorage.getItem("ung_push_topics") || "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  function setStoredPushTopics(topics) {
+    localStorage.setItem("ung_push_topics", JSON.stringify(topics));
+  }
+
+  function renderActiveSubscriptions() {
+    const container = document.getElementById("active-subs-container");
+    const list = document.getElementById("active-subs-list");
+    const topics = getStoredPushTopics();
+    if (!container || !list) return;
+
+    if (topics.length === 0) {
+      container.classList.add("hidden");
+      list.innerHTML = "";
+      return;
+    }
+
+    container.classList.remove("hidden");
+    list.innerHTML = topics.map(t => \`
+      <div class="active-sub-item">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span class="topic-tag">\${escapeText(t)}</span>
+          <span style="font-size:11px; color:var(--text-muted);">&bull; Subscribed</span>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button type="button" class="btn-sm" style="font-size:11px; padding:2px 8px; border-color:var(--accent-orange); color:#fdba74;" onclick="window.sendTestPushForTopic('\${escapeText(t)}')">Test Alert</button>
+          <button type="button" class="btn-sm btn-danger" style="font-size:11px; padding:2px 8px;" onclick="window.unsubscribePushTopic('\${escapeText(t)}')">Unsubscribe</button>
+        </div>
+      </div>
+    \`).join("");
+  }
+
+  async function initWebPushLoginCard() {
+    const capBadge = document.getElementById("push-capability-badge");
+    const pillsContainer = document.getElementById("push-topic-pills");
+    const dataList = document.getElementById("available-topics-list");
+    const deviceInput = document.getElementById("push-device-label");
+
+    if (deviceInput && !deviceInput.value) {
+      const ua = navigator.userAgent;
+      let browser = "Browser";
+      if (ua.includes("Chrome")) browser = "Chrome";
+      else if (ua.includes("Firefox")) browser = "Firefox";
+      else if (ua.includes("Safari")) browser = "Safari";
+      else if (ua.includes("Edge")) browser = "Edge";
+      const os = ua.includes("Mac") ? "macOS" : (ua.includes("Win") ? "Windows" : (ua.includes("Android") ? "Android" : (ua.includes("iPhone") || ua.includes("iPad") ? "iOS" : "Linux")));
+      deviceInput.value = \`\${browser} on \${os}\`;
+    }
+
+    renderActiveSubscriptions();
+
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      if (capBadge) {
+        capBadge.innerHTML = '<span class="badge badge-danger">Push Unsupported</span>';
+      }
+      return;
+    }
+
+    if (capBadge) {
+      const perm = Notification.permission;
+      const badgeClass = perm === "granted" ? "badge-success" : (perm === "denied" ? "badge-danger" : "badge-neutral");
+      capBadge.innerHTML = \`<span class="badge \${badgeClass}"><span class="pulse-indicator"></span> Push: \${perm === "granted" ? "Enabled" : (perm === "denied" ? "Denied" : "Ready")}</span>\`;
+    }
+
+    // Load available topics from gateway
+    try {
+      const res = await fetch("/v1/webpush/topics");
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.topics)) {
+        if (dataList) {
+          dataList.innerHTML = data.topics.map(t => \`<option value="\${escapeText(t.name)}">\${escapeText(t.description || t.name)}</option>\`).join("");
+        }
+        if (pillsContainer) {
+          if (data.topics.length === 0) {
+            pillsContainer.innerHTML = '<span style="font-size:12px; color:var(--text-dim);">No public topics configured yet</span>';
+          } else {
+            pillsContainer.innerHTML = data.topics.map(t => \`
+              <span class="topic-pill" data-topic="\${escapeText(t.name)}" title="\${escapeText(t.description || '')}">+ \${escapeText(t.name)}</span>
+            \`).join("");
+            pillsContainer.querySelectorAll(".topic-pill").forEach(p => {
+              p.addEventListener("click", () => {
+                const topicInput = document.getElementById("push-topic-input");
+                if (topicInput) {
+                  topicInput.value = p.getAttribute("data-topic");
+                  topicInput.focus();
+                }
+              });
+            });
+          }
+        }
+      }
+    } catch {
+      if (pillsContainer) pillsContainer.innerHTML = '';
+    }
+  }
+
+  const pushSubBtn = document.getElementById("push-subscribe-btn");
+  const pushAlert = document.getElementById("push-alert");
+
+  if (pushSubBtn) {
+    pushSubBtn.addEventListener("click", async () => {
+      pushAlert.classList.add("hidden");
+      const topicInput = document.getElementById("push-topic-input");
+      const topic = topicInput ? topicInput.value.trim() : "";
+      if (!topic) {
+        showAlert("Please enter or select a topic to subscribe", "danger", pushAlert);
+        return;
+      }
+
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        showAlert("Web Push is not supported in this browser environment.", "danger", pushAlert);
+        return;
+      }
+
+      const btnTextEl = document.getElementById("push-subscribe-btn-text");
+      const originalBtnText = btnTextEl ? btnTextEl.textContent : "Subscribe";
+      if (btnTextEl) btnTextEl.textContent = "Subscribing...";
+      pushSubBtn.disabled = true;
+
+      try {
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") {
+          throw new Error("Notification permission was denied. Please allow notifications in your browser settings to receive alerts.");
+        }
+
+        const vapidRes = await fetch("/v1/webpush/vapid-public-key");
+        const vapidData = await vapidRes.json();
+        if (!vapidData.ok || !vapidData.publicKey) {
+          throw new Error("Failed to retrieve gateway VAPID public key");
+        }
+
+        const registration = await navigator.serviceWorker.register("/sw.js");
+        await navigator.serviceWorker.ready;
+
+        const applicationServerKey = urlBase64ToUint8Array(vapidData.publicKey);
+        const subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey
+        });
+
+        const subJson = subscription.toJSON();
+        const deviceName = document.getElementById("push-device-label")?.value.trim() || "";
+
+        const subscribeRes = await fetch("/v1/webpush/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            topic,
+            subscription: subJson,
+            device_name: deviceName
+          })
+        });
+
+        const subResult = await subscribeRes.json();
+        if (!subscribeRes.ok || !subResult.ok) {
+          throw new Error(subResult.error || "Failed to register subscription with gateway");
+        }
+
+        const stored = getStoredPushTopics();
+        if (!stored.includes(topic)) {
+          stored.push(topic);
+          setStoredPushTopics(stored);
+        }
+
+        showAlert(\`Successfully subscribed to '\${topic}'! Browser alerts are active for this device.\`, "success", pushAlert);
+        renderActiveSubscriptions();
+        initWebPushLoginCard();
+      } catch (err) {
+        showAlert(err.message, "danger", pushAlert);
+      } finally {
+        if (btnTextEl) btnTextEl.textContent = originalBtnText;
+        pushSubBtn.disabled = false;
+      }
+    });
+  }
+
+  window.sendTestPushForTopic = async function(topic) {
+    showAlert("Dispatching test notification to this device...", "info", pushAlert);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        throw new Error("No active browser push subscription found. Please click Subscribe first.");
+      }
+      const res = await fetch("/v1/webpush/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subscription: sub.toJSON(),
+          topic,
+          title: "Gateway Alert Test",
+          message: \`Live push notification test for topic '\${topic}'. Clicking this alert will open the configured page.\`
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Failed to dispatch test notification");
+      showAlert("Test notification dispatched! Check your desktop/mobile notifications.", "success", pushAlert);
+    } catch (err) {
+      showAlert("Test failed: " + err.message, "danger", pushAlert);
+    }
+  };
+
+  const testBtn = document.getElementById("push-send-test-btn");
+  if (testBtn) {
+    testBtn.addEventListener("click", () => {
+      const topics = getStoredPushTopics();
+      const topic = topics[0] || document.getElementById("push-topic-input")?.value.trim() || "system.alerts";
+      window.sendTestPushForTopic(topic);
+    });
+  }
+
+  window.unsubscribePushTopic = async function(topic) {
+    if (!confirm(\`Unsubscribe from push alerts for '\${topic}'?\`)) return;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await fetch("/v1/webpush/unsubscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            topic,
+            endpoint: sub.endpoint
+          })
+        });
+      }
+      const stored = getStoredPushTopics().filter(t => t !== topic);
+      setStoredPushTopics(stored);
+      renderActiveSubscriptions();
+      showAlert(\`Unsubscribed from '\${topic}'.\`, "success", pushAlert);
+    } catch (err) {
+      showAlert("Error unsubscribing: " + err.message, "danger", pushAlert);
+    }
+  };
 
   // Overview Tab
   async function loadOverview() {
@@ -1253,21 +1794,32 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
       cachedTopics = res.items || [];
       const tbody = document.getElementById("topics-table-body");
       if (cachedTopics.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No topics configured</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);">No topics configured</td></tr>';
       } else {
-        tbody.innerHTML = cachedTopics.map(t => \`
-          <tr>
-            <td><span class="topic-tag">\${escapeText(t.name)}</span></td>
-            <td>\${escapeText(t.description || '-')}</td>
-            <td><span class="badge badge-neutral">\${t.sources_count} sources</span></td>
-            <td><span class="badge badge-neutral">\${t.subscriptions_count} subscribers</span></td>
-            <td><span class="badge \${t.enabled ? 'badge-success' : 'badge-danger'}">\${t.enabled ? 'Active' : 'Disabled'}</span></td>
-            <td>
-              <button class="btn-sm" onclick="window.toggleTopic(\${t.id}, \${t.enabled ? 0 : 1})">\${t.enabled ? 'Disable' : 'Enable'}</button>
-              <button class="btn-sm btn-danger" onclick="window.deleteTopic(\${t.id})">Delete</button>
-            </td>
-          </tr>
-        \`).join("");
+        tbody.innerHTML = cachedTopics.map(t => {
+          const cfg = t.webpush_config || {};
+          const isEnabled = cfg.webpush_enabled !== false;
+          const clickUrl = cfg.click_url || "/admin#events";
+          const styleBadge = isEnabled
+            ? \`<span class="badge badge-success" title="Opens: \${escapeText(clickUrl)}">Web Push &bull; \${escapeText(clickUrl)}</span>\`
+            : '<span class="badge badge-neutral">Disabled</span>';
+
+          return \`
+            <tr>
+              <td><span class="topic-tag">\${escapeText(t.name)}</span></td>
+              <td>\${escapeText(t.description || '-')}</td>
+              <td><span class="badge badge-neutral">\${t.sources_count} sources</span></td>
+              <td><span class="badge badge-neutral">\${t.subscriptions_count} subscribers</span></td>
+              <td style="font-size:12px;">\${styleBadge}</td>
+              <td><span class="badge \${t.enabled ? 'badge-success' : 'badge-danger'}">\${t.enabled ? 'Active' : 'Disabled'}</span></td>
+              <td>
+                <button class="btn-sm" onclick="window.editTopicStyle(\${t.id})">Edit Style</button>
+                <button class="btn-sm" onclick="window.toggleTopic(\${t.id}, \${t.enabled ? 0 : 1})">\${t.enabled ? 'Disable' : 'Enable'}</button>
+                <button class="btn-sm btn-danger" onclick="window.deleteTopic(\${t.id})">Delete</button>
+              </td>
+            </tr>
+          \`;
+        }).join("");
       }
     } catch (err) {
       showAlert("Failed to load topics: " + err.message);
@@ -1278,13 +1830,85 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
     e.preventDefault();
     const name = document.getElementById("topic-name").value.trim();
     const description = document.getElementById("topic-desc").value.trim();
+    const webpush_config = {
+      webpush_enabled: document.getElementById("topic-webpush-enabled").checked,
+      click_url: document.getElementById("topic-click-url").value.trim() || "/admin#events",
+      icon: document.getElementById("topic-icon").value.trim() || undefined,
+      badge: document.getElementById("topic-badge").value.trim() || undefined,
+      require_interaction: document.getElementById("topic-require-interaction").checked
+    };
+
     try {
-      await api("/v1/admin/topics", { method: "POST", body: { name, description } });
+      await api("/v1/admin/topics", {
+        method: "POST",
+        body: { name, description, webpush_config }
+      });
       document.getElementById("create-topic-form").reset();
-      showAlert("Topic created successfully", "success");
+      document.getElementById("topic-webpush-enabled").checked = true;
+      document.getElementById("topic-click-url").value = "/admin#events";
+      showAlert("Topic created successfully with Web Push style", "success");
       loadTopics();
     } catch (err) {
       showAlert("Error creating topic: " + err.message);
+    }
+  });
+
+  window.editTopicStyle = function(id) {
+    const topic = cachedTopics.find(t => t.id === id);
+    if (!topic) return;
+    const cfg = topic.webpush_config || {};
+    document.getElementById("edit-topic-id").value = topic.id;
+    document.getElementById("topic-style-modal-name").textContent = topic.name;
+    document.getElementById("edit-topic-desc").value = topic.description || "";
+    document.getElementById("edit-topic-webpush-enabled").checked = cfg.webpush_enabled !== false;
+    document.getElementById("edit-topic-click-url").value = cfg.click_url || "/admin#events";
+    document.getElementById("edit-topic-icon").value = cfg.icon || "";
+    document.getElementById("edit-topic-badge").value = cfg.badge || "";
+    document.getElementById("edit-topic-image").value = cfg.image || "";
+    document.getElementById("edit-topic-require-interaction").checked = !!cfg.require_interaction;
+    document.getElementById("edit-topic-vibrate").value = Array.isArray(cfg.vibrate) ? cfg.vibrate.join(", ") : (cfg.vibrate || "");
+    document.getElementById("edit-topic-tag").value = cfg.tag || "";
+    document.getElementById("topic-style-modal").classList.remove("hidden");
+  };
+
+  document.getElementById("topic-style-modal-close").addEventListener("click", () => {
+    document.getElementById("topic-style-modal").classList.add("hidden");
+  });
+  document.getElementById("topic-style-modal-cancel").addEventListener("click", () => {
+    document.getElementById("topic-style-modal").classList.add("hidden");
+  });
+
+  document.getElementById("topic-style-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const id = parseInt(document.getElementById("edit-topic-id").value, 10);
+    const description = document.getElementById("edit-topic-desc").value.trim();
+    const vibrateRaw = document.getElementById("edit-topic-vibrate").value.trim();
+    let vibrate = undefined;
+    if (vibrateRaw) {
+      vibrate = vibrateRaw.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+    }
+
+    const webpush_config = {
+      webpush_enabled: document.getElementById("edit-topic-webpush-enabled").checked,
+      click_url: document.getElementById("edit-topic-click-url").value.trim() || "/admin#events",
+      icon: document.getElementById("edit-topic-icon").value.trim() || undefined,
+      badge: document.getElementById("edit-topic-badge").value.trim() || undefined,
+      image: document.getElementById("edit-topic-image").value.trim() || undefined,
+      require_interaction: document.getElementById("edit-topic-require-interaction").checked,
+      vibrate: vibrate && vibrate.length > 0 ? vibrate : undefined,
+      tag: document.getElementById("edit-topic-tag").value.trim() || undefined
+    };
+
+    try {
+      await api("/v1/admin/topics/" + id, {
+        method: "PATCH",
+        body: { description, webpush_config }
+      });
+      document.getElementById("topic-style-modal").classList.add("hidden");
+      showAlert("Notification style and Web Push settings updated", "success");
+      loadTopics();
+    } catch (err) {
+      showAlert("Error updating notification style: " + err.message, "danger");
     }
   });
 
@@ -1313,7 +1937,7 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
     const val = destTypeSelect.value;
     document.getElementById("dest-email-fields").classList.toggle("hidden", val !== "email");
     document.getElementById("dest-telegram-fields").classList.toggle("hidden", val !== "telegram");
-    document.getElementById("dest-ntfy-fields").classList.toggle("hidden", val !== "ntfy");
+    document.getElementById("dest-webpush-fields").classList.toggle("hidden", val !== "webpush");
   });
 
   async function loadDestinations() {
@@ -1326,9 +1950,18 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
       } else {
         tbody.innerHTML = cachedDestinations.map(d => {
           let summary = "-";
-          if (d.type === "email") summary = d.config.to || "-";
-          else if (d.type === "telegram") summary = "Chat: " + (d.config.chat_id || "-");
-          else if (d.type === "ntfy") summary = (d.config.base_url || "https://ntfy.sh") + "/" + (d.config.topic || "");
+          if (d.type === "email") {
+            summary = d.config.to || "-";
+          } else if (d.type === "telegram") {
+            summary = "Chat: " + (d.config.chat_id || "-");
+          } else if (d.type === "webpush") {
+            try {
+              const u = new URL(d.config.endpoint);
+              summary = "Host: " + u.hostname + (d.config.click_url ? " (" + d.config.click_url + ")" : "");
+            } catch {
+              summary = "Endpoint: " + (d.config.endpoint ? d.config.endpoint.substring(0, 30) + "..." : "-");
+            }
+          }
 
           return \`
             <tr>
@@ -1367,12 +2000,17 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
     } else if (type === "telegram") {
       config = { chat_id: document.getElementById("dest-telegram-chat").value.trim() };
       secret = document.getElementById("dest-telegram-token").value.trim();
-    } else if (type === "ntfy") {
+    } else if (type === "webpush") {
       config = {
-        base_url: document.getElementById("dest-ntfy-url").value.trim(),
-        topic: document.getElementById("dest-ntfy-topic").value.trim()
+        endpoint: document.getElementById("dest-webpush-endpoint").value.trim(),
+        keys: {
+          p256dh: document.getElementById("dest-webpush-p256dh").value.trim(),
+          auth: document.getElementById("dest-webpush-auth").value.trim()
+        },
+        click_url: document.getElementById("dest-webpush-click-url").value.trim() || undefined,
+        icon: document.getElementById("dest-webpush-icon").value.trim() || undefined
       };
-      secret = document.getElementById("dest-ntfy-token").value.trim();
+      secret = "";
     }
 
     try {
@@ -1825,6 +2463,7 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
     try {
       const res = await api("/v1/admin/settings");
       const d = res.data;
+      const vapidKey = d.vapid_public_key || "Not generated yet";
       document.getElementById("settings-diagnostics-body").innerHTML = \`
         <div style="font-size:13.5px; line-height:2;">
           <div><strong>Runtime Environment:</strong> \${escapeText(d.runtime)}</div>
@@ -1834,11 +2473,38 @@ tr:hover td { background: rgba(255, 255, 255, 0.02); }
           <div><strong>Email Sender ID:</strong> \${escapeText(d.config.email_sender_id)}</div>
           <div><strong>Worker Email Key Configured:</strong> <span class="badge \${d.config.has_email_api_key ? 'badge-success' : 'badge-neutral'}">\${d.config.has_email_api_key ? 'Present' : 'Not Set in Env'}</span></div>
           <div><strong>Worker Telegram Token:</strong> <span class="badge \${d.config.has_telegram_bot_token ? 'badge-success' : 'badge-neutral'}">\${d.config.has_telegram_bot_token ? 'Present' : 'Not Set in Env'}</span></div>
-          <div><strong>Self-Hosted Plain HTTP ntfy:</strong> <span class="badge \${d.config.allow_http_ntfy ? 'badge-warning' : 'badge-neutral'}">\${d.config.allow_http_ntfy ? 'Allowed' : 'HTTPS Enforced'}</span></div>
-          <div><strong>Active Administrators:</strong> \${d.administrators.active_count}</div>
+          <div><strong>Active Web Push Subscribers:</strong> <span class="badge badge-success">\${d.webpush_subscribers_count ?? 0}</span></div>
+          <div style="margin-top:12px; padding:12px; background:var(--bg-panel-alt); border:1px solid var(--border); border-radius:6px; line-height:1.6;">
+            <div style="font-weight:700; color:var(--text-main); margin-bottom:4px; display:flex; justify-content:space-between; align-items:center;">
+              <span>VAPID Public Key (Web Push RFC 8292):</span>
+              <button id="copy-vapid-btn" class="btn-sm" style="padding:2px 8px; font-size:11px;">Copy Key</button>
+            </div>
+            <div style="font-family:monospace; font-size:11.5px; word-break:break-all; color:var(--accent-orange);">\${escapeText(vapidKey)}</div>
+            <div style="margin-top:8px;">
+              <button id="regenerate-vapid-btn" class="btn-sm btn-danger" style="padding:3px 10px; font-size:11px;">Regenerate VAPID Keys</button>
+            </div>
+          </div>
+          <div style="margin-top:10px;"><strong>Active Administrators:</strong> \${d.administrators.active_count}</div>
           <div><strong>Active Web Sessions:</strong> \${d.administrators.active_sessions}</div>
         </div>
       \`;
+
+      document.getElementById("copy-vapid-btn").addEventListener("click", () => {
+        navigator.clipboard.writeText(vapidKey).then(() => {
+          showAlert("VAPID public key copied to clipboard", "success");
+        });
+      });
+
+      document.getElementById("regenerate-vapid-btn").addEventListener("click", async () => {
+        if (!confirm("WARNING: Regenerating VAPID keys will invalidate existing browser push subscriptions until they re-subscribe. Continue?")) return;
+        try {
+          const r = await api("/v1/admin/vapid/regenerate", { method: "POST" });
+          showAlert("VAPID keys regenerated successfully: " + r.message, "success");
+          loadSettings();
+        } catch (err) {
+          showAlert("Error regenerating VAPID keys: " + err.message, "danger");
+        }
+      });
     } catch (err) {
       showAlert("Error loading diagnostics: " + err.message);
     }

@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS source_topics (
 CREATE TABLE IF NOT EXISTS destinations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
-  type TEXT NOT NULL CHECK (type IN ('email', 'telegram', 'ntfy')),
+  type TEXT NOT NULL CHECK (type IN ('email', 'telegram', 'webpush')),
   config_json TEXT NOT NULL,
   secret_ciphertext TEXT,
   enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),

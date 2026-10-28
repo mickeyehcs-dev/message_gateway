@@ -4,12 +4,12 @@
 
 import { EmailProvider } from "./email.js";
 import { TelegramProvider } from "./telegram.js";
-import { NtfyProvider } from "./ntfy.js";
+import { WebPushProvider } from "./webpush.js";
 
 const providers = {
   email: new EmailProvider(),
   telegram: new TelegramProvider(),
-  ntfy: new NtfyProvider()
+  webpush: new WebPushProvider()
 };
 
 /**
@@ -31,4 +31,4 @@ export function registerProvider(type, providerInstance) {
   providers[type.toLowerCase()] = providerInstance;
 }
 
-export { EmailProvider, TelegramProvider, NtfyProvider };
+export { EmailProvider, TelegramProvider, WebPushProvider };

@@ -8,6 +8,7 @@ import { normalizeTopic, isValidSeverity, isValidEmail } from "../security/valid
 import { getProvider } from "../providers/index.js";
 import { queryFirst, queryAll, execute } from "../db/index.js";
 import { sanitizeLogString } from "../security/redaction.js";
+import { getOrGenerateVapidKeys } from "../security/vapid.js";
 
 /**
  * System Overview and Dashboard Metrics
@@ -258,16 +259,29 @@ export async function deleteSource(db, sourceId) {
  * Topics Management
  */
 export async function listTopics(db) {
-  return await queryAll(
+  const topics = await queryAll(
     db,
     `
-    SELECT t.id, t.name, t.description, t.enabled, t.created_at,
+    SELECT t.id, t.name, t.description, t.enabled, t.webpush_config_json, t.created_at,
            (SELECT COUNT(*) FROM source_topics WHERE topic_name = t.name) as sources_count,
            (SELECT COUNT(*) FROM subscriptions WHERE topic_id = t.id AND enabled = 1) as subscriptions_count
     FROM topics t
     ORDER BY t.name ASC
     `
   );
+
+  return topics.map(t => {
+    let webpushConfig = {};
+    try {
+      webpushConfig = t.webpush_config_json ? JSON.parse(t.webpush_config_json) : {};
+    } catch {
+      webpushConfig = {};
+    }
+    return {
+      ...t,
+      webpush_config: webpushConfig
+    };
+  });
 }
 
 export async function createTopic(db, data) {
@@ -282,14 +296,20 @@ export async function createTopic(db, data) {
   }
 
   const description = typeof data.description === "string" ? data.description.trim().slice(0, 500) : "";
+  const webpushConfig = data.webpush_config && typeof data.webpush_config === "object"
+    ? JSON.stringify(data.webpush_config)
+    : (typeof data.webpush_config_json === "string" ? data.webpush_config_json : "{}");
 
   const res = await execute(
     db,
-    "INSERT INTO topics (name, description, enabled, created_at) VALUES (?, ?, 1, datetime('now'))",
-    [name, description]
+    "INSERT INTO topics (name, description, webpush_config_json, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
+    [name, description, webpushConfig]
   );
 
-  return { id: res.lastRowId, name, description, enabled: 1 };
+  let parsedWebpush = {};
+  try { parsedWebpush = JSON.parse(webpushConfig); } catch {}
+
+  return { id: res.lastRowId, name, description, webpush_config: parsedWebpush, enabled: 1 };
 }
 
 export async function updateTopic(db, topicId, data) {
@@ -298,6 +318,13 @@ export async function updateTopic(db, topicId, data) {
 
   if (typeof data.description === "string") {
     await execute(db, "UPDATE topics SET description = ? WHERE id = ?", [data.description.trim().slice(0, 500), topicId]);
+  }
+
+  if (data.webpush_config !== undefined) {
+    const webpushConfigStr = typeof data.webpush_config === "object"
+      ? JSON.stringify(data.webpush_config)
+      : (typeof data.webpush_config === "string" ? data.webpush_config : "{}");
+    await execute(db, "UPDATE topics SET webpush_config_json = ? WHERE id = ?", [webpushConfigStr, topicId]);
   }
 
   if (typeof data.enabled === "boolean" || data.enabled === 0 || data.enabled === 1) {
@@ -348,8 +375,8 @@ export async function createDestination(db, data, encryptionKey) {
   if (!name || name.length > 100) throw new Error("Destination name is required (1-100 characters)");
 
   const type = typeof data.type === "string" ? data.type.trim().toLowerCase() : "";
-  if (!["email", "telegram", "ntfy"].includes(type)) {
-    throw new Error("Destination type must be one of: email, telegram, ntfy");
+  if (!["email", "telegram", "webpush"].includes(type)) {
+    throw new Error("Destination type must be one of: email, telegram, webpush");
   }
 
   const existing = await queryFirst(db, "SELECT id FROM destinations WHERE name = ?", [name]);
@@ -871,6 +898,18 @@ export async function getSystemSettings(db, env) {
     } catch (e2) {}
   }
 
+  let vapidPublicKey = "";
+  try {
+    const vapid = await getOrGenerateVapidKeys(db, env);
+    vapidPublicKey = vapid.publicKey;
+  } catch (e) {}
+
+  let webpushSubscribersCount = 0;
+  try {
+    const res = await queryFirst(db, "SELECT COUNT(*) as count FROM destinations WHERE type = 'webpush' AND enabled = 1");
+    webpushSubscribersCount = res?.count || 0;
+  } catch (e) {}
+
   return {
     runtime: "Cloudflare Workers",
     database: "Cloudflare D1 (SQLite)",
@@ -880,7 +919,8 @@ export async function getSystemSettings(db, env) {
       email_sender_id: env.EMAIL_SENDER_ID || "snd_mvcmbbyw",
       has_email_api_key: Boolean(env.EMAIL_API_KEY),
       has_telegram_bot_token: Boolean(env.TELEGRAM_BOT_TOKEN),
-      allow_http_ntfy: env.ALLOW_HTTP_NTFY === "true"
+      vapid_public_key: vapidPublicKey,
+      webpush_subscribers_count: webpushSubscribersCount
     },
     administrators: {
       active_count: adminCount?.count || 0,

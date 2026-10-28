@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS topics (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
   description TEXT NOT NULL DEFAULT '',
+  webpush_config_json TEXT NOT NULL DEFAULT '{}',
   enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -31,7 +32,7 @@ CREATE TABLE IF NOT EXISTS source_topics (
 CREATE TABLE IF NOT EXISTS destinations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
-  type TEXT NOT NULL CHECK (type IN ('email', 'telegram', 'ntfy')),
+  type TEXT NOT NULL CHECK (type IN ('email', 'telegram', 'webpush')),
   config_json TEXT NOT NULL,
   secret_ciphertext TEXT,
   enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
@@ -119,6 +120,13 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   key TEXT PRIMARY KEY,
   count INTEGER NOT NULL DEFAULT 0,
   reset_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Performance and Query Indexes

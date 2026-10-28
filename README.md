@@ -2,7 +2,7 @@
 
 A production-ready, secure, and extensible Universal Notification Gateway built for **Cloudflare Workers** and **Cloudflare D1 (SQLite)**.
 
-The gateway enables registered servers, microservices, and monitoring agents to dispatch notifications across email, Telegram, and ntfy using a single unified API with source authentication, topic allow-lists, recipient group resolution, idempotency protection, and delivery audit logging.
+The gateway enables registered servers, microservices, and monitoring agents to dispatch notifications across email, Telegram, and Web Push notifications using a single unified API with source authentication, topic allow-lists, recipient group resolution, idempotency protection, and delivery audit logging.
 
 ---
 
@@ -13,11 +13,11 @@ The gateway enables registered servers, microservices, and monitoring agents to 
 3. [D1 Database Setup & Migrations](#3-d1-database-setup--migrations)
 4. [Administrator Provisioning & Password Reset](#4-administrator-provisioning--password-reset)
 5. [Local Development & Testing](#5-local-development--testing)
-6. [Administrative Console (Web Dashboard)](#6-administrative-console-web-dashboard)
+6. [Administrative Console & Web Push Subscription](#6-administrative-console--web-push-subscription)
 7. [Delivery Channels Configuration](#7-delivery-channels-configuration)
    - [Email (HTTP Sender API)](#email-http-sender-api)
    - [Telegram Bot](#telegram-bot)
-   - [ntfy Topics & SSRF Guardrails](#ntfy-topics--ssrf-guardrails)
+   - [Web Push (Browser Push Service) & Notification Styles](#web-push-browser-push-service--notification-styles)
 8. [Notification Submission API](#8-notification-submission-api)
    - [Authentication & Topic Permissions](#authentication--topic-permissions)
    - [Request Schema & Idempotency](#request-schema--idempotency)
@@ -38,10 +38,12 @@ The gateway is built with a clean modular separation of concerns:
 ├── migrations/                     # Ordered SQL schema migrations
 │   ├── 0001_initial.sql            # Core topics, sources, destinations, subscriptions
 │   ├── 0002_admin_users.sql        # Admin credentials and sessions
-│   └── 0003_schema_enhancements.sql# Distributed rate limiting, audit timestamps & indexes
+│   ├── 0003_schema_enhancements.sql# Distributed rate limiting, audit timestamps & indexes
+│   └── 0004_webpush_support.sql    # Web Push support, VAPID settings & topic style configs
 ├── scripts/                        # Safe administration utilities
 │   ├── create-admin.mjs            # Interactive admin creation with masked input
-│   └── reset-password.mjs          # Safe password reset and session invalidation
+│   ├── reset-password.mjs          # Safe password reset and session invalidation
+│   └── remote-init.sql             # Direct D1 remote initialization script
 ├── src/
 │   ├── index.js                    # Worker fetch handler entry point
 │   ├── router.js                   # HTTP route dispatching & security headers
@@ -54,23 +56,30 @@ The gateway is built with a clean modular separation of concerns:
 │   │   ├── base.js                 # Provider base class & interface
 │   │   ├── email.js                # HTTP email API adapter
 │   │   ├── telegram.js             # Telegram Bot API adapter
-│   │   ├── ntfy.js                 # ntfy topic adapter with SSRF protection
+│   │   ├── webpush.js              # Web Push RFC 8030/8291/8292 adapter with SSRF guardrails
 │   │   └── index.js                # Provider factory and registry
 │   ├── security/                   # Cryptography, validation, and redaction
 │   │   ├── crypto.js               # Web Crypto PBKDF2-SHA256, AES-256-GCM, tokens
+│   │   ├── vapid.js                # VAPID P-256 ECDSA key management & D1 persistence
 │   │   ├── rate-limit.js           # Distributed D1 rate limiting
 │   │   ├── redaction.js            # Secret scrubbing from logs and errors
-│   │   ├── ssrf.js                 # Anti-SSRF URL validation
+│   │   ├── ssrf.js                 # Anti-SSRF push service endpoint validation
 │   │   └── validation.js           # Topic normalization, body bounds, HTML escaping
-│   └── ui/                         # Self-contained administration dashboard
-│       └── dashboard.js            # Dark-blue aesthetic, zero emojis, vanilla JS
+│   ├── services/                   # Business and administrative services
+│   │   ├── admin.js                # Administration API handlers and diagnostics
+│   │   ├── routing.js              # Event routing, recipient resolution, and delivery
+│   │   └── webpush.js              # Public client subscription service from login portal
+│   └── ui/                         # Self-contained administration dashboard & service worker
+│       ├── dashboard.js            # Dark-blue aesthetic, zero emojis, vanilla JS
+│       └── service-worker.js       # Background push notification & click handler (/sw.js)
 ├── tests/                          # Automated Vitest test suite
 │   ├── admin-api.test.js
 │   ├── auth.test.js
 │   ├── authorization.test.js
 │   ├── providers.test.js
 │   ├── routing.test.js
-│   └── validation.test.js
+│   ├── validation.test.js
+│   └── webpush.test.js
 ├── wrangler.jsonc                  # Cloudflare Worker and D1 configuration
 └── package.json                    # Project metadata and management scripts
 ```
@@ -80,9 +89,10 @@ The gateway is built with a clean modular separation of concerns:
 - **`admin_users`**: Administrator usernames, cryptographic salts, PBKDF2-SHA256 hashes (210,000 iterations), enabled flag, and login audit timestamps.
 - **`admin_sessions`**: Active sessions stored **only as SHA-256 token hashes**, references to administrator, expiration timestamps, and revocation flags.
 - **`sources`**: Authorized client applications with independently revocable credentials stored as SHA-256 hashes, enabled flags, rate limits, and usage timestamps.
-- **`topics`**: Validated and normalized topic identifiers (e.g., `security.alerts`, `billing.invoices`).
+- **`topics`**: Validated and normalized topic identifiers (e.g., `security.alerts`, `billing.invoices`) with `webpush_config_json` defining default click URL, icons, badges, vibration, and subscriber visibility.
 - **`source_topics`**: Explicit many-to-many permissions defining which topics each source is authorized to publish to.
-- **`destinations`**: Output notification endpoints (email, Telegram, ntfy). Secrets (API keys, bot tokens) are encrypted at rest using AES-256-GCM.
+- **`destinations`**: Output notification endpoints (email, Telegram, webpush). Secrets (API keys, bot tokens) are encrypted at rest using AES-256-GCM.
+- **`system_settings`**: Internal gateway configuration stored in D1, including VAPID ECDSA P-256 keys.
 - **`recipient_groups` & `group_members`**: Groups combining multiple destinations with duplicate membership prevention.
 - **`subscriptions`**: Rules connecting authorized recipients (individual destinations or groups) to topics, with optional source and severity filters.
 - **`events`**: Notification records containing source reference, topic, title, severity, sanitized message, metadata, processing status, and idempotency key.
@@ -121,7 +131,6 @@ The following non-secret variables are maintained in `wrangler.jsonc`:
 
 - `EMAIL_API_URL`: HTTP email sender API endpoint (default: `https://sender-api.mickey.qzz.io/api/v1/send`).
 - `EMAIL_SENDER_ID`: Account sender identifier (default: `snd_mvcmbbyw`).
-- `ALLOW_HTTP_NTFY`: Set to `"true"` only if using self-hosted plain HTTP ntfy instances (default: `"false"`).
 - `CORS_ORIGIN`: Restrict CORS origin if accessing the API from an external web app (e.g., `https://dashboard.example.com`).
 
 ---
@@ -207,26 +216,30 @@ The automated test suite runs 47 tests across 6 suites verifying authentication,
 
 ---
 
-## 6. Administrative Console (Web Dashboard)
+## 6. Administrative Console & Web Push Subscription
 
-The gateway includes a self-contained, responsive single-page administration interface served directly from the Worker at `/` and `/admin`.
+The gateway includes a self-contained, responsive interface served directly from the Worker at `/` and `/admin`.
 
-### Design Philosophy
-- **Dark-Blue Theme**: High-contrast dark aesthetic (`#080d1a`, `#121c33`) with restrained orange accents (`#f97316`).
-- **Zero Emojis**: Professional typography, clean status badges, and SVG icons.
-- **Secure Sessions**: Token stored only in browser `sessionStorage`, automatically expired after 24 hours or on logout, with immediate UI transition upon session expiry without full page reload.
-- **Secret Protection**: Stored secrets (bot tokens, email keys) are masked (`••••••••`) and never exposed to the client.
+### Dual-Portal Interface
+1. **Public Web Push Subscription (Login Page)**:
+   - Visitors and team members can enter any active topic (with autocomplete suggestions) and subscribe their browser or mobile device with a single click—no administrative login required.
+   - Automatically handles browser `Notification.requestPermission()`, registers the gateway's background Service Worker (`/sw.js`), subscribes to push via the gateway's VAPID public key (`/v1/webpush/vapid-public-key`), and registers a push destination in D1.
+   - Shows active device subscriptions and allows sending instant test push notifications directly from the browser.
+2. **Administrator Console**:
+   - Secure sign-in protected by PBKDF2-SHA256 password hashes and revocable SHA-256 session tokens.
+   - High-contrast dark aesthetic (`#080d1a`, `#121c33`) with restrained orange accents (`#f97316`) and zero emojis.
+   - Secret protection: Stored secrets (bot tokens, email keys) are masked (`••••••••`) and never exposed to the client.
 
 ### Dashboard Sections
 1. **Overview**: Key metrics (sources, topics, destinations, events, deliveries), recent events feed, and delivery failure breakdowns.
 2. **Sources**: Register applications, assign allowed topics, configure rate limits, view last-used timestamps, and safely rotate credentials.
-3. **Topics**: Manage topic identifiers and descriptions, view subscriber counts.
-4. **Destinations**: Configure Email, Telegram, and ntfy destinations, test connectivity directly with live results.
+3. **Topics**: Manage topics and configure **Notification Styles** (click URL, icons, badges, banners, interaction requirements, vibration patterns, and login page visibility).
+4. **Destinations**: Configure Email, Telegram, and Web Push destinations, test connectivity directly with live results.
 5. **Recipient Groups**: Assemble destinations into named operational groups (e.g., `devops-oncall`).
 6. **Subscriptions**: Route topics to individual destinations or recipient groups with source and severity filters.
 7. **Event History**: Paginated, searchable event stream with drill-down views showing recipient outcomes and a **Retry Failed Deliveries** button.
 8. **Delivery Logs**: Detailed filterable audit trail for every external HTTP delivery attempt.
-9. **System Settings**: Real-time diagnostic check of Cloudflare Worker bindings, D1 readiness, and session purge tools.
+9. **System Settings**: Real-time diagnostic check of Cloudflare Worker bindings, D1 readiness, active Web Push subscribers, VAPID public key management, and session purge tools.
 
 ---
 
@@ -243,16 +256,18 @@ The gateway includes a self-contained, responsive single-page administration int
 - **Chat ID**: Numeric identifier for direct chat or group (e.g., `-1001234567890`).
 - **Formatting**: HTML formatting (`<b>[SEVERITY] Title</b>`, pre-formatted metadata). Message length bounded to 4,096 characters to prevent Telegram API errors.
 
-### ntfy Topics & SSRF Guardrails
-- **Base URL**: Defaults to `https://ntfy.sh`.
-- **Topic**: Normalized topic slug (e.g., `company-critical-alerts`).
-- **Access Token**: Optional Bearer token for private ntfy instances.
-- **SSRF Prevention**: The Worker strictly rejects destination URLs targeting:
-  - `localhost` and `127.0.0.0/8`
-  - Private IPv4 ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
-  - Cloud metadata endpoints (`169.254.169.254`)
-  - IPv6 loopback (`::1`) and unique-local ranges
-  - Plain `http://` schemes (unless `ALLOW_HTTP_NTFY="true"` is explicitly set by an administrator).
+### Web Push (Browser Push Service) & Notification Styles
+Standard RFC 8030 / RFC 8291 (`aes128gcm`) Web Push with RFC 8292 VAPID authentication:
+- **VAPID Key Generation**: Automatically created in D1 (`system_settings`) on first startup using Web Crypto ECDSA P-256 keys. Can be regenerated anytime from the System Settings panel.
+- **Endpoint Protection & SSRF Prevention**: The Worker strictly verifies push service endpoints using anti-SSRF guardrails rejecting private IPv4 ranges, loopback addresses, link-local metadata endpoints (`169.254.169.254`), and non-HTTPS endpoints.
+- **Automatic Unsubscribe Cleanup**: Receives HTTP 404/410 Gone from push services (FCM, Apple Push, Mozilla) when a user revokes permissions or clears browser data, and automatically removes dead destinations and subscriptions.
+- **Configurable Topic Notification Styles**:
+  - **Click Action (`click_url`)**: Custom URL or path opened in browser when notification is clicked (e.g., `/admin#events`, `/`, or `https://...`). If the tab is already open, the Service Worker automatically focuses it; otherwise it navigates or opens a new window.
+  - **Icons & Badges (`icon`, `badge`)**: High-resolution alert icons and monochrome status bar badges.
+  - **Banner Image (`image`)**: Rich visual preview for desktop and mobile notifications.
+  - **Interaction Mode (`require_interaction`)**: Keeps alert on screen until dismissed by the user.
+  - **Vibration Patterns (`vibrate`)**: Customizable haptic vibration intervals for mobile devices (e.g., `200, 100, 200`).
+  - **Topic Web Push Toggle (`webpush_enabled`)**: Administrators can toggle whether individual topics are publicly discoverable on the login page.
 
 ---
 
@@ -467,5 +482,5 @@ curl -X POST https://<YOUR_WORKER>.workers.dev/v1/admin/cleanup-sessions \
 | `D1 database tables not yet initialized` (503) | Migrations have not been applied to the remote database | Run `npm run db:migrate:remote`. |
 | `DESTINATION_ENCRYPTION_KEY is required` | The encryption key secret is missing | Execute `npx wrangler secret put DESTINATION_ENCRYPTION_KEY`. |
 | `Source is not authorized to publish to topic` | Topic permission not granted to source | In the dashboard, edit the source and select the topic in the multi-select box. |
-| `ntfy URL security check failed` | The target URL points to a private/loopback IP address | Verify the ntfy URL is a public HTTPS host or configure `ALLOW_HTTP_NTFY="true"`. |
+| `Web Push URL security check failed` | The target push service endpoint points to a private/loopback IP address | Verify the push endpoint is a public HTTPS host provided by the browser push service. |
 | `Too many failed login attempts` | Login rate limiter triggered | Wait 15 minutes or reset password via `npm run admin:reset`. |

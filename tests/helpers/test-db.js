@@ -15,11 +15,13 @@ export function createTestDatabase() {
   const m1 = readFileSync(resolve(process.cwd(), "migrations/0001_initial.sql"), "utf8");
   const m2 = readFileSync(resolve(process.cwd(), "migrations/0002_admin_users.sql"), "utf8");
   const m3 = readFileSync(resolve(process.cwd(), "migrations/0003_schema_enhancements.sql"), "utf8");
+  const m4 = readFileSync(resolve(process.cwd(), "migrations/0004_webpush_support.sql"), "utf8");
 
   // Execute migrations
   sqlite.exec(m1);
   sqlite.exec(m2);
   sqlite.exec(m3);
+  sqlite.exec(m4);
 
   function wrapStatement(sql, boundParams = []) {
     return {
